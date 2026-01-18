@@ -14,6 +14,7 @@ tar -xzf xfoil6.99.tgz
 
 echo "Compiling XFOIL..."
 cd Xfoil
+# Modify plot library settings for headless operation
 cd plotlib
 make clean
 make
@@ -26,6 +27,7 @@ cd ../..
 
 cd src
 make clean
+# Modify for no graphics
 sed -i 's/PLTOBJ = .*/PLTOBJ = /g' Makefile
 make xfoil
 
