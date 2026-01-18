@@ -17,48 +17,45 @@ find_dir() {
 }
 
 PLOTLIB_DIR=$(find_dir "plotlib")
-OSGEN_DIR=$(find_dir "osgen")
 BIN_DIR=$(find_dir "bin")
 
-# 2. PATCH ALL MAKEFILES (The "Relax" Patch)
-# This is the critical line that fixes the 'Rank mismatch' error
-find "$XFOIL_ROOT" -name "Makefile*" -exec sed -i 's/bin\/rm /bin\/rm -f /g' {} +
+# 2. PATCH ALL MAKEFILES
+# Fix the compiler and the "allow mismatch" issue
 find "$XFOIL_ROOT" -name "Makefile*" -exec sed -i 's/FC = f77/FC = gfortran/g' {} +
 find "$XFOIL_ROOT" -name "Makefile*" -exec sed -i 's/CC = cc/CC = gcc/g' {} +
-
-# Inject the 'allow mismatch' flag into the Fortran flags (FFLAGS)
 find "$XFOIL_ROOT" -name "Makefile*" -exec sed -i 's/FFLAGS = /FFLAGS = -fallow-argument-mismatch /g' {} +
-# Also fix other common XFOIL build traps
-find "$XFOIL_ROOT" -name "Makefile*" -exec sed -i 's/-fpe0/-ffpe-trap=invalid,zero,overflow/g' {} +
-find "$XFOIL_ROOT" -name "Makefile*" -exec sed -i 's/-CB/-fbounds-check/g' {} +
+find "$XFOIL_ROOT" -name "Makefile*" -exec sed -i 's/bin\/rm /bin\/rm -f /g' {} +
 
 # 3. COMPILE PLOTLIB
 cd "$PLOTLIB_DIR"
 make clean || true
 make libPlt_gSP.a
 
-# 4. COMPILE OSGEN
-if [ -n "$OSGEN_DIR" ]; then
-    cd "$OSGEN_DIR"
-    make clean || true
-    make osgen || echo "OSGEN failed, but continuing..."
-fi
+# LINKING FIX: XFOIL expects 'gDP' (Double Precision) but we built 'gSP' (Single)
+# We create a symbolic link so the linker finds what it's looking for.
+ln -s libPlt_gSP.a libPlt_gDP.a
+echo "✅ Linked libPlt_gSP.a to libPlt_gDP.a"
 
-# 5. COMPILE XFOIL
+# 4. COMPILE XFOIL
 if [ -n "$BIN_DIR" ]; then
     cd "$BIN_DIR"
-    # Fix X11 paths specifically for the main binary
+    
+    # Force the Makefile to use the correct library search path and X11 location
+    sed -i 's/\/usr\/X11R6\/lib/\/usr\/lib\/x86_64-linux-gnu/g' Makefile
     sed -i 's/\/usr\/X11\/include/\/usr\/include\/X11/g' Makefile
-    sed -i 's/\/usr\/X11\/lib/\/usr\/lib\/x86_64-linux-gnu/g' Makefile
-    # Ensure math library is linked
-    sed -i 's/LIBS = /LIBS = -lm /g' Makefile
     
     make clean || true
-    make xfoil
+    # We use -i (ignore errors) just for the first pass if it complains about osgen
+    make xfoil || make xfoil
     
-    # 6. INSTALLATION
-    cp xfoil /usr/local/bin/
-    echo "🏁 XFOIL installed successfully!"
+    # 5. INSTALLATION
+    if [ -f "xfoil" ]; then
+        cp xfoil /usr/local/bin/
+        echo "🏁 XFOIL INSTALLED SUCCESSFULLY!"
+    else
+        echo "❌ XFOIL binary was not created!"
+        exit 1
+    fi
 else
     echo "❌ Error: BIN directory not found!"
     exit 1
