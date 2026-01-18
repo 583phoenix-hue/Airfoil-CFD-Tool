@@ -1,10 +1,9 @@
 #!/bin/bash
-# Install XFOIL on Linux - Fixed for Railway/Render
+# Install XFOIL on Linux - Fixed for "Clean" errors
 set -e
 
 echo "Installing XFOIL dependencies..."
 apt-get update
-# Added libx11-dev which was missing
 apt-get install -y gfortran build-essential wget libx11-dev
 
 echo "Downloading XFOIL source..."
@@ -14,24 +13,27 @@ tar -xzf xfoil6.99.tgz
 
 echo "Compiling XFOIL..."
 cd Xfoil/plotlib
-
-# CRITICAL FIX: Tell the compiler where X11 is actually located
-# We replace the hardcoded /usr/X11/include with the standard Linux path
 sed -i 's|/usr/X11/include|/usr/include/X11|g' Makefile
-
-make clean
+# We use || true to prevent the script from stopping if 'clean' finds nothing to delete
+make clean || true
 make
 
+echo "Building ORRS..."
 cd ../orrs/bin
-make clean
+# Fix for the specific error you just got: ignore clean errors
+make clean || true
 make osgen
 
+echo "Building XFOIL core..."
 cd ../..
 cd src
-make clean
+make clean || true
 
-# Remove the PLTOBJ link to avoid graphics issues in headless mode
+# Disable graphics to make it a 'headless' server version
 sed -i 's/PLTOBJ = .*/PLTOBJ = /g' Makefile
+# XFOIL uses an old Fortran style; we add a flag to allow it
+sed -i 's/FTNFLAGS = -O/FTNFLAGS = -O -std=legacy/g' Makefile
+
 make xfoil
 
 echo "Installing XFOIL binary..."
