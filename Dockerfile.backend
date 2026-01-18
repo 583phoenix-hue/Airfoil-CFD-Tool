@@ -1,0 +1,27 @@
+FROM python:3.11-slim
+
+WORKDIR /app
+
+# Install system dependencies
+RUN apt-get update && apt-get install -y \
+    gfortran \
+    build-essential \
+    wget \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copy and run XFOIL installation script
+COPY install_xfoil.sh .
+RUN chmod +x install_xfoil.sh && ./install_xfoil.sh
+
+# Install Python dependencies
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Copy application files
+COPY main.py .
+
+# Expose port
+EXPOSE 8000
+
+# Run the application
+CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]

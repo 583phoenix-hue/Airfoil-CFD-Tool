@@ -1,0 +1,10 @@
+__pycache__/
+*.pyc
+*.pyo
+*.dat
+c.txt
+raw.dat
+fix.dat
+.env
+venv/
+xfoil.exe
