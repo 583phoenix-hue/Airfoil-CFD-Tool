@@ -1,51 +1,48 @@
 #!/bin/bash
-# Install XFOIL on Linux - The "Intel to GNU" Fix
-set -e
+set -e  # Exit immediately if a command fails
 
-echo "Installing XFOIL dependencies..."
-apt-get update
-apt-get install -y gfortran build-essential wget libx11-dev
+echo "Starting XFOIL Installation..."
 
-echo "Downloading XFOIL source..."
-cd /tmp
+# 1. Download and Extract
 wget https://web.mit.edu/drela/Public/web/xfoil/xfoil6.99.tgz
 tar -xzf xfoil6.99.tgz
-
-echo "Patching Makefiles..."
 cd Xfoil
 
-# 1. Fix Plotlib (X11 path)
-cd plotlib
-sed -i 's|/usr/X11/include|/usr/include/X11|g' Makefile
-make clean || true
-make
-cd ..
+# 2. PATCH THE MAKEFILES
+# Fix the 'rm' commands so the build doesn't exit if a file is already gone
+find . -name "Makefile*" -exec sed -i 's/bin\/rm /bin\/rm -f /g' {} +
 
-# 2. Fix ORRS (The 'ifort' error you just got)
-cd orrs/bin
-# Swap Intel compiler for GFortran and change flags
-sed -i 's/FC = ifort/FC = gfortran/g' Makefile
-sed -i 's/FTNFLAGS = -O -fpe0 -CB/FTNFLAGS = -O -std=legacy/g' Makefile
+# Replace Intel-specific flags (-fpe0, -CB) with GFortran equivalents
+find . -name "Makefile*" -exec sed -i 's/-fpe0/-ffpe-trap=invalid,zero,overflow/g' {} +
+find . -name "Makefile*" -exec sed -i 's/-CB/-fbounds-check/g' {} +
+
+# Fix X11 search paths for modern Linux (Debian/Ubuntu)
+find . -name "Makefile*" -exec sed -i 's/\/usr\/X11\/include/\/usr\/include\/X11/g' {} +
+find . -name "Makefile*" -exec sed -i 's/\/usr\/X11\/lib/\/usr\/lib\/x86_64-linux-gnu/g' {} +
+
+# 3. COMPILE PLOTLIB (Graphics library)
+cd plotlib
+make clean || true
+make libPlt_gSP.a
+
+# 4. COMPILE OSGEN (Aerostructural solver)
+cd ../osgen
+sed -i 's/FC = f77/FC = gfortran/g' Makefile
 make clean || true
 make osgen
-cd ../..
 
-# 3. Fix XFOIL Core
-cd src
-# Swap Intel compiler for GFortran and change flags
-sed -i 's/FC = ifort/FC = gfortran/g' Makefile
-sed -i 's/FTNFLAGS = -O -fpe0 -CB/FTNFLAGS = -O -std=legacy/g' Makefile
-# Disable graphics for headless mode
-sed -i 's/PLTOBJ = .*/PLTOBJ = /g' Makefile
-# Linker flags fix
-sed -i 's/LFLAGS = -Vaxlib/LFLAGS = /g' Makefile
+# 5. COMPILE XFOIL
+cd ../bin
+sed -i 's/CC = cc/CC = gcc/g' Makefile
+sed -i 's/FC = f77/FC = gfortran/g' Makefile
+# Force the linker to find the math library and X11
+sed -i 's/LIBS = -L\/usr\/lib\/x86_64-linux-gnu -lX11/LIBS = -lX11 -lm/g' Makefile
 
 make clean || true
 make xfoil
 
-echo "Installing XFOIL binary..."
+# 6. INSTALLATION
 cp xfoil /usr/local/bin/
-chmod +x /usr/local/bin/xfoil
+cp ../osgen/osgen /usr/local/bin/
 
-echo "XFOIL installed successfully!"
-/usr/local/bin/xfoil -h || echo "XFOIL is ready"
+echo "XFOIL installed successfully to /usr/local/bin/xfoil"

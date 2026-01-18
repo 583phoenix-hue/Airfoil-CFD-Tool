@@ -2,26 +2,32 @@ FROM python:3.11-slim
 
 WORKDIR /app
 
-# Install system dependencies
+# 1. Install system dependencies
+# Added libx11-6 to ensure the binary can run after compilation
 RUN apt-get update && apt-get install -y \
     gfortran \
     build-essential \
     wget \
+    libx11-dev \
+    libxext-dev \
+    libxt-dev \
+    libx11-6 \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy and run XFOIL installation script
+# Set the XFOIL path environment variable for main.py
+ENV XFOIL_PATH=/usr/local/bin/xfoil
+
+# 2. Copy and run XFOIL installation script
 COPY install_xfoil.sh .
 RUN chmod +x install_xfoil.sh && ./install_xfoil.sh
 
-# Install Python dependencies
+# 3. Install Python dependencies
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy application files
+# 4. Copy application files
 COPY main.py .
 
-# Expose port
 EXPOSE 8000
 
-# Run the application
 CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
