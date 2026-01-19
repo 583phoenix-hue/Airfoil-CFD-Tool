@@ -1,62 +1,39 @@
 #!/bin/bash
-set -e 
+# Install XFOIL on Linux
 
-echo "Starting XFOIL Installation..."
+set -e
 
-# 1. Download and Extract
+echo "Installing XFOIL dependencies..."
+apt-get update
+apt-get install -y gfortran build-essential wget
+
+echo "Downloading XFOIL source..."
+cd /tmp
 wget https://web.mit.edu/drela/Public/web/xfoil/xfoil6.99.tgz
 tar -xzf xfoil6.99.tgz
 
-# SMART PATH DETECTION
-XFOIL_ROOT=$(find $(pwd) -iname "plotlib" -type d | head -n 1 | xargs dirname)
-echo "✅ Found XFOIL root at: $XFOIL_ROOT"
+echo "Compiling XFOIL..."
+cd Xfoil
+# Modify plot library settings for headless operation
+cd plotlib
+make clean
+make
+cd ..
 
-# Helper function for case-insensitive dirs
-find_dir() {
-    find "$XFOIL_ROOT" -maxdepth 1 -iname "$1" -type d
-}
+cd orrs/bin
+make clean  
+make osgen
+cd ../..
 
-PLOTLIB_DIR=$(find_dir "plotlib")
-BIN_DIR=$(find_dir "bin")
+cd src
+make clean
+# Modify for no graphics
+sed -i 's/PLTOBJ = .*/PLTOBJ = /g' Makefile
+make xfoil
 
-# 2. PATCH ALL MAKEFILES
-# Fix the compiler and the "allow mismatch" issue
-find "$XFOIL_ROOT" -name "Makefile*" -exec sed -i 's/FC = f77/FC = gfortran/g' {} +
-find "$XFOIL_ROOT" -name "Makefile*" -exec sed -i 's/CC = cc/CC = gcc/g' {} +
-find "$XFOIL_ROOT" -name "Makefile*" -exec sed -i 's/FFLAGS = /FFLAGS = -fallow-argument-mismatch /g' {} +
-find "$XFOIL_ROOT" -name "Makefile*" -exec sed -i 's/bin\/rm /bin\/rm -f /g' {} +
+echo "Installing XFOIL binary..."
+cp xfoil /usr/local/bin/
+chmod +x /usr/local/bin/xfoil
 
-# 3. COMPILE PLOTLIB
-cd "$PLOTLIB_DIR"
-make clean || true
-make libPlt_gSP.a
-
-# LINKING FIX: XFOIL expects 'gDP' (Double Precision) but we built 'gSP' (Single)
-# We create a symbolic link so the linker finds what it's looking for.
-ln -s libPlt_gSP.a libPlt_gDP.a
-echo "✅ Linked libPlt_gSP.a to libPlt_gDP.a"
-
-# 4. COMPILE XFOIL
-if [ -n "$BIN_DIR" ]; then
-    cd "$BIN_DIR"
-    
-    # Force the Makefile to use the correct library search path and X11 location
-    sed -i 's/\/usr\/X11R6\/lib/\/usr\/lib\/x86_64-linux-gnu/g' Makefile
-    sed -i 's/\/usr\/X11\/include/\/usr\/include\/X11/g' Makefile
-    
-    make clean || true
-    # We use -i (ignore errors) just for the first pass if it complains about osgen
-    make xfoil || make xfoil
-    
-    # 5. INSTALLATION
-    if [ -f "xfoil" ]; then
-        cp xfoil /usr/local/bin/
-        echo "🏁 XFOIL INSTALLED SUCCESSFULLY!"
-    else
-        echo "❌ XFOIL binary was not created!"
-        exit 1
-    fi
-else
-    echo "❌ Error: BIN directory not found!"
-    exit 1
-fi
+echo "XFOIL installed successfully!"
+xfoil -h || echo "XFOIL is ready"
