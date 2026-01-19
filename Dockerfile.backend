@@ -2,29 +2,16 @@ FROM python:3.11-slim
 
 WORKDIR /app
 
-# Install system dependencies including Xvfb for headless XFOIL
+# Install XFOIL from Debian repos (pre-compiled, headless-ready)
 RUN apt-get update && apt-get install -y \
-    gfortran \
-    gcc \
-    g++ \
-    make \
-    wget \
-    libx11-dev \
-    libx11-6 \
-    xvfb \
+    xfoil \
     && rm -rf /var/lib/apt/lists/*
 
 # Set XFOIL path environment variable
-ENV XFOIL_PATH=/usr/local/bin/xfoil
+ENV XFOIL_PATH=/usr/bin/xfoil
 
-# Copy and run XFOIL installation script
-COPY install_xfoil.sh .
-RUN chmod +x install_xfoil.sh && ./install_xfoil.sh
-
-# Verify XFOIL installation
-RUN which xfoil && xfoil <<EOF || true
-QUIT
-EOF
+# Verify XFOIL is installed
+RUN which xfoil && xfoil -h || true
 
 # Install Python dependencies
 COPY requirements.txt .
