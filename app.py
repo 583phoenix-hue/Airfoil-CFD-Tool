@@ -16,23 +16,39 @@ if 'last_params' not in st.session_state:
     st.session_state.last_params = None
 
 # Cached function for API calls
-@st.cache_data(ttl=3600, show_spinner=False)  # Cache for 1 hour
+@st.cache_data(ttl=3600, show_spinner=False, max_entries=50)  # Limit cache size
 def run_xfoil_analysis(file_content: bytes, filename: str, reynolds: float, alpha: float, backend_url: str):
     """
     Run XFOIL analysis with caching.
     If same file + parameters are requested, return cached result.
     """
+    import time
+    import hashlib
+    
+    # Add small delay to prevent rapid-fire requests
+    time.sleep(0.5)
+    
     url = f"{backend_url}/upload_airfoil/"
     
     files = {"file": (filename, file_content, "text/plain")}
     data = {"reynolds": reynolds, "alpha": alpha}
     
-    response = requests.post(url, files=files, data=data, timeout=30)
-    
-    if response.status_code != 200:
-        raise Exception(f"Server Error: {response.text}")
-    
-    return response.json()
+    try:
+        response = requests.post(url, files=files, data=data, timeout=60)
+        
+        if response.status_code == 429:
+            raise Exception("Server is rate-limited. Please wait 30 seconds and try again.")
+        
+        if response.status_code != 200:
+            raise Exception(f"Server Error ({response.status_code}): {response.text}")
+        
+        return response.json()
+    except requests.exceptions.Timeout:
+        raise Exception("Request timeout - backend is taking too long (>60s)")
+    except requests.exceptions.ConnectionError:
+        raise Exception("Cannot connect to backend server")
+    except Exception as e:
+        raise Exception(str(e))
 
 # Custom CSS for better styling
 st.markdown("""
@@ -164,6 +180,13 @@ if uploaded_file is not None and run_analysis:
     # Use environment variable for backend URL
     backend_url = os.getenv("BACKEND_URL", "http://127.0.0.1:8000")
     
+    # Prevent double-clicking
+    if 'analyzing' in st.session_state and st.session_state.analyzing:
+        st.warning("⏳ Analysis already in progress. Please wait...")
+        st.stop()
+    
+    st.session_state.analyzing = True
+    
     try:
         # Read file content for caching
         file_content = uploaded_file.getvalue()
@@ -184,16 +207,12 @@ if uploaded_file is not None and run_analysis:
             'alpha': alpha,
             'filename': uploaded_file.name
         }
+        st.session_state.analyzing = False
         st.success("✅ Simulation completed successfully!")
         st.rerun()  # Rerun to display results without the "Running" message
     
-    except requests.exceptions.Timeout:
-        st.error("⏱️ Request timeout. The simulation took too long. Try simpler geometry or different parameters.")
-    except requests.exceptions.ConnectionError:
-        st.error("🔌 Cannot connect to server. Make sure the backend is running.")
-    except requests.exceptions.RequestException as e:
-        st.error(f"❌ Request failed: {e}")
     except Exception as e:
+        st.session_state.analyzing = False
         st.error(f"❌ Error: {str(e)}")
 
 # Display results if they exist in session state
