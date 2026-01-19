@@ -62,7 +62,7 @@ st.markdown("""
 st.markdown('<p class="main-header">✈️ Student Airfoil CFD Tool</p>', unsafe_allow_html=True)
 st.markdown('<p class="sub-header">Analyze airfoil performance using XFOIL</p>', unsafe_allow_html=True)
 
-    # Sidebar with information and inputs
+# Sidebar with information and inputs
 with st.sidebar:
     st.header("⚙️ Simulation Parameters")
     
@@ -208,29 +208,29 @@ if st.session_state.results is not None:
     if "coefficients" in result and result["coefficients"]:
         st.markdown("---")
         st.subheader("📊 Aerodynamic Coefficients")
-                
-                coef_cols = st.columns(4)
-                coeffs = result["coefficients"]
-                
-                metrics = [
-                    ("CL", "Lift Coefficient", "CL"),
-                    ("CD", "Drag Coefficient", "CD"),
-                    ("CM", "Moment Coefficient", "CM"),
-                    ("L/D", "Lift-to-Drag Ratio", None)
-                ]
-                
-                for idx, (label, name, key) in enumerate(metrics):
-                    with coef_cols[idx]:
-                        if key and key in coeffs:
-                            value = coeffs[key]
-                            st.metric(label, f"{value:.4f}")
-                        elif label == "L/D" and "CL" in coeffs and "CD" in coeffs:
-                            if coeffs["CD"] != 0:
-                                ld_ratio = coeffs["CL"] / coeffs["CD"]
-                                st.metric(label, f"{ld_ratio:.2f}")
-                            else:
-                                st.metric(label, "N/A")
-            
+        
+        coef_cols = st.columns(4)
+        coeffs = result["coefficients"]
+        
+        metrics = [
+            ("CL", "Lift Coefficient", "CL"),
+            ("CD", "Drag Coefficient", "CD"),
+            ("CM", "Moment Coefficient", "CM"),
+            ("L/D", "Lift-to-Drag Ratio", None)
+        ]
+        
+        for idx, (label, name, key) in enumerate(metrics):
+            with coef_cols[idx]:
+                if key and key in coeffs:
+                    value = coeffs[key]
+                    st.metric(label, f"{value:.4f}")
+                elif label == "L/D" and "CL" in coeffs and "CD" in coeffs:
+                    if coeffs["CD"] != 0:
+                        ld_ratio = coeffs["CL"] / coeffs["CD"]
+                        st.metric(label, f"{ld_ratio:.2f}")
+                    else:
+                        st.metric(label, "N/A")
+    
     # Prepare data for plotting
     coords_before = pd.DataFrame(result["coords_before"], columns=["x", "y"])
     coords_after = pd.DataFrame(result["coords_after"], columns=["x", "y"])
