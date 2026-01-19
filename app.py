@@ -1,12 +1,38 @@
 import streamlit as st
 import requests
 import pandas as pd
-import matplotlib.pyplot as plt
+import plotly.graph_objects as go
+import plotly.express as px
 import numpy as np
 import os
 
 # Page configuration
 st.set_page_config(page_title="Airfoil CFD Tool", layout="wide", page_icon="✈️")
+
+# Initialize session state for results
+if 'results' not in st.session_state:
+    st.session_state.results = None
+if 'last_params' not in st.session_state:
+    st.session_state.last_params = None
+
+# Cached function for API calls
+@st.cache_data(ttl=3600, show_spinner=False)  # Cache for 1 hour
+def run_xfoil_analysis(file_content: bytes, filename: str, reynolds: float, alpha: float, backend_url: str):
+    """
+    Run XFOIL analysis with caching.
+    If same file + parameters are requested, return cached result.
+    """
+    url = f"{backend_url}/upload_airfoil/"
+    
+    files = {"file": (filename, file_content, "text/plain")}
+    data = {"reynolds": reynolds, "alpha": alpha}
+    
+    response = requests.post(url, files=files, data=data, timeout=30)
+    
+    if response.status_code != 200:
+        raise Exception(f"Server Error: {response.text}")
+    
+    return response.json()
 
 # Custom CSS for better styling
 st.markdown("""
@@ -36,9 +62,20 @@ st.markdown("""
 st.markdown('<p class="main-header">✈️ Student Airfoil CFD Tool</p>', unsafe_allow_html=True)
 st.markdown('<p class="sub-header">Analyze airfoil performance using XFOIL</p>', unsafe_allow_html=True)
 
-# Sidebar with information and inputs
+    # Sidebar with information and inputs
 with st.sidebar:
     st.header("⚙️ Simulation Parameters")
+    
+    # Add cache info
+    with st.expander("⚡ Performance Info"):
+        st.markdown("""
+        **Smart Caching Enabled!**
+        
+        Results are cached for 1 hour. If someone already analyzed the same airfoil 
+        with the same parameters, you'll get instant results! 🚀
+        
+        This reduces server load and makes the tool faster for everyone.
+        """)
     
     # Add educational info
     with st.expander("ℹ️ About This Tool"):
@@ -120,34 +157,57 @@ uploaded_file = st.file_uploader(
     help="Upload a file with airfoil x,y coordinates"
 )
 
-if uploaded_file is not None:
-    # Create two columns for layout
-    col1, col2 = st.columns([1, 1])
-    
-    with col1:
-        st.info("🔄 Running XFOIL simulation...")
-    
-    # Use environment variable for backend URL (Railway will set this)
+# Add Run Analysis button
+run_analysis = st.button("🚀 Run Analysis", type="primary", disabled=(uploaded_file is None))
+
+if uploaded_file is not None and run_analysis:
+    # Use environment variable for backend URL
     backend_url = os.getenv("BACKEND_URL", "http://127.0.0.1:8000")
-    url = f"{backend_url}/upload_airfoil/"
     
     try:
-        files = {"file": (uploaded_file.name, uploaded_file, "text/plain")}
-        data = {"reynolds": reynolds, "alpha": alpha}
+        # Read file content for caching
+        file_content = uploaded_file.getvalue()
         
-        with st.spinner("Computing..."):
-            response = requests.post(url, files=files, data=data, timeout=30)
+        with st.spinner("Computing... (this may be instant if cached)"):
+            result = run_xfoil_analysis(
+                file_content=file_content,
+                filename=uploaded_file.name,
+                reynolds=reynolds,
+                alpha=alpha,
+                backend_url=backend_url
+            )
         
-        if response.status_code != 200:
-            st.error(f"❌ Server Error: {response.text}")
-        else:
-            result = response.json()
-            st.success("✅ Simulation completed successfully!")
-            
-            # Display aerodynamic coefficients if available
-            if "coefficients" in result and result["coefficients"]:
-                st.markdown("---")
-                st.subheader("📊 Aerodynamic Coefficients")
+        # Store results in session state
+        st.session_state.results = result
+        st.session_state.last_params = {
+            'reynolds': reynolds,
+            'alpha': alpha,
+            'filename': uploaded_file.name
+        }
+        st.success("✅ Simulation completed successfully!")
+        st.rerun()  # Rerun to display results without the "Running" message
+    
+    except requests.exceptions.Timeout:
+        st.error("⏱️ Request timeout. The simulation took too long. Try simpler geometry or different parameters.")
+    except requests.exceptions.ConnectionError:
+        st.error("🔌 Cannot connect to server. Make sure the backend is running.")
+    except requests.exceptions.RequestException as e:
+        st.error(f"❌ Request failed: {e}")
+    except Exception as e:
+        st.error(f"❌ Error: {str(e)}")
+
+# Display results if they exist in session state
+if st.session_state.results is not None:
+    result = st.session_state.results
+    last_params = st.session_state.last_params
+    
+    # Display parameter info
+    st.info(f"📊 Showing results for: **{last_params['filename']}** | Re = {last_params['reynolds']:,} | α = {last_params['alpha']}°")
+    
+    # Display aerodynamic coefficients if available
+    if "coefficients" in result and result["coefficients"]:
+        st.markdown("---")
+        st.subheader("📊 Aerodynamic Coefficients")
                 
                 coef_cols = st.columns(4)
                 coeffs = result["coefficients"]
@@ -171,94 +231,136 @@ if uploaded_file is not None:
                             else:
                                 st.metric(label, "N/A")
             
-            # Prepare data for plotting
-            coords_before = pd.DataFrame(result["coords_before"], columns=["x", "y"])
-            coords_after = pd.DataFrame(result["coords_after"], columns=["x", "y"])
-            
-            st.markdown("---")
-            
-            # Create two columns for plots
-            plot_col1, plot_col2 = st.columns(2)
-            
-            with plot_col1:
-                st.subheader("🛩️ Airfoil Geometry")
-                fig1, ax1 = plt.subplots(figsize=(8, 4))
-                ax1.plot(coords_after["x"], coords_after["y"], 'b-', linewidth=2, label="Airfoil")
-                ax1.fill(coords_after["x"], coords_after["y"], alpha=0.3)
-                ax1.axhline(y=0, color='k', linestyle='--', alpha=0.3, linewidth=0.5)
-                ax1.axvline(x=0, color='k', linestyle='--', alpha=0.3, linewidth=0.5)
-                ax1.set_aspect("equal", "box")
-                ax1.set_xlabel("x/c", fontsize=10)
-                ax1.set_ylabel("y/c", fontsize=10)
-                ax1.set_title(f"{uploaded_file.name}", fontsize=11)
-                ax1.grid(True, alpha=0.3)
-                ax1.legend()
-                st.pyplot(fig1)
-                
-                # Show coordinate statistics
-                with st.expander("📐 Geometry Details"):
-                    st.write(f"**Number of points:** {len(coords_after)}")
-                    st.write(f"**Max thickness:** {(coords_after['y'].max() - coords_after['y'].min()):.4f}")
-                    st.write(f"**Chord length:** {coords_after['x'].max() - coords_after['x'].min():.4f}")
-            
-            with plot_col2:
-                if result["cp_x"] and result["cp_values"]:
-                    st.subheader("📈 Pressure Distribution")
-                    fig2, ax2 = plt.subplots(figsize=(8, 4))
-                    
-                    cp_x = np.array(result["cp_x"])
-                    cp_values = np.array(result["cp_values"])
-                    
-                    # Separate upper and lower surface
-                    mid_idx = len(cp_x) // 2
-                    ax2.plot(cp_x[:mid_idx], cp_values[:mid_idx], 'b-', linewidth=2, label="Upper surface")
-                    ax2.plot(cp_x[mid_idx:], cp_values[mid_idx:], 'r-', linewidth=2, label="Lower surface")
-                    
-                    ax2.set_xlabel("x/c", fontsize=10)
-                    ax2.set_ylabel("Cp", fontsize=10)
-                    ax2.set_title(f"Re = {reynolds:,.0f}, α = {alpha}°", fontsize=11)
-                    ax2.invert_yaxis()
-                    ax2.grid(True, alpha=0.3)
-                    ax2.legend()
-                    ax2.axhline(y=0, color='k', linestyle='--', alpha=0.3, linewidth=0.5)
-                    st.pyplot(fig2)
-                    
-                    # Add interpretation help
-                    with st.expander("📖 Understanding Cp"):
-                        st.markdown("""
-                        **Pressure Coefficient (Cp):**
-                        - Negative Cp = Lower pressure (suction)
-                        - Positive Cp = Higher pressure
-                        - Upper surface typically has lower pressure (negative Cp)
-                        - Lower surface has higher pressure (positive Cp)
-                        - The difference creates lift!
-                        """)
-                else:
-                    st.warning("⚠️ No pressure coefficient data available")
-            
-            # Download results option
-            st.markdown("---")
-            if st.button("💾 Download Results as CSV"):
-                csv_data = pd.DataFrame({
-                    'x': result["cp_x"],
-                    'Cp': result["cp_values"]
-                })
-                csv = csv_data.to_csv(index=False)
-                st.download_button(
-                    label="Download Cp Data",
-                    data=csv,
-                    file_name=f"{uploaded_file.name.replace('.dat', '')}_cp_results.csv",
-                    mime="text/csv"
-                )
+    # Prepare data for plotting
+    coords_before = pd.DataFrame(result["coords_before"], columns=["x", "y"])
+    coords_after = pd.DataFrame(result["coords_after"], columns=["x", "y"])
     
-    except requests.exceptions.Timeout:
-        st.error("⏱️ Request timeout. The simulation took too long. Try simpler geometry or different parameters.")
-    except requests.exceptions.ConnectionError:
-        st.error("🔌 Cannot connect to server. Make sure the FastAPI server is running (python main.py)")
-    except requests.exceptions.RequestException as e:
-        st.error(f"❌ Request failed: {e}")
-    except Exception as e:
-        st.error(f"❌ Unexpected error: {e}")
+    st.markdown("---")
+    
+    # Create two columns for plots
+    plot_col1, plot_col2 = st.columns(2)
+    
+    with plot_col1:
+        st.subheader("🛩️ Airfoil Geometry")
+        fig1 = go.Figure()
+        
+        # Add airfoil shape
+        fig1.add_trace(go.Scatter(
+            x=coords_after["x"],
+            y=coords_after["y"],
+            mode='lines',
+            name='Airfoil',
+            line=dict(color='#667eea', width=3),
+            fill='toself',
+            fillcolor='rgba(102, 126, 234, 0.2)',
+            hovertemplate='x: %{x:.4f}<br>y: %{y:.4f}<extra></extra>'
+        ))
+        
+        # Add reference lines
+        fig1.add_hline(y=0, line_dash="dash", line_color="gray", opacity=0.3)
+        fig1.add_vline(x=0, line_dash="dash", line_color="gray", opacity=0.3)
+        
+        fig1.update_layout(
+            title=last_params['filename'],
+            xaxis_title="x/c",
+            yaxis_title="y/c",
+            height=400,
+            hovermode='closest',
+            plot_bgcolor='white',
+            yaxis=dict(scaleanchor="x", scaleratio=1)
+        )
+        
+        fig1.update_xaxes(showgrid=True, gridcolor='lightgray')
+        fig1.update_yaxes(showgrid=True, gridcolor='lightgray')
+        
+        st.plotly_chart(fig1, use_container_width=True)
+        
+        # Show coordinate statistics
+        with st.expander("📐 Geometry Details"):
+            st.write(f"**Number of points:** {len(coords_after)}")
+            st.write(f"**Max thickness:** {(coords_after['y'].max() - coords_after['y'].min()):.4f}")
+            st.write(f"**Chord length:** {coords_after['x'].max() - coords_after['x'].min():.4f}")
+    
+    with plot_col2:
+        if result["cp_x"] and result["cp_values"]:
+            st.subheader("📈 Pressure Distribution")
+            
+            cp_x = np.array(result["cp_x"])
+            cp_values = np.array(result["cp_values"])
+            
+            fig2 = go.Figure()
+            
+            # Separate upper and lower surface
+            mid_idx = len(cp_x) // 2
+            
+            # Upper surface
+            fig2.add_trace(go.Scatter(
+                x=cp_x[:mid_idx],
+                y=cp_values[:mid_idx],
+                mode='lines',
+                name='Upper surface',
+                line=dict(color='#3b82f6', width=3),
+                hovertemplate='x/c: %{x:.4f}<br>Cp: %{y:.4f}<extra></extra>'
+            ))
+            
+            # Lower surface
+            fig2.add_trace(go.Scatter(
+                x=cp_x[mid_idx:],
+                y=cp_values[mid_idx:],
+                mode='lines',
+                name='Lower surface',
+                line=dict(color='#ef4444', width=3),
+                hovertemplate='x/c: %{x:.4f}<br>Cp: %{y:.4f}<extra></extra>'
+            ))
+            
+            # Reference line
+            fig2.add_hline(y=0, line_dash="dash", line_color="gray", opacity=0.3)
+            
+            fig2.update_layout(
+                title=f"Re = {last_params['reynolds']:,.0f}, α = {last_params['alpha']}°",
+                xaxis_title="x/c",
+                yaxis_title="Cp",
+                height=400,
+                hovermode='closest',
+                plot_bgcolor='white',
+                yaxis=dict(autorange='reversed')  # Inverted y-axis
+            )
+            
+            fig2.update_xaxes(showgrid=True, gridcolor='lightgray')
+            fig2.update_yaxes(showgrid=True, gridcolor='lightgray')
+            
+            st.plotly_chart(fig2, use_container_width=True)
+            
+            # Add interpretation help
+            with st.expander("📖 Understanding Cp"):
+                st.markdown("""
+                **Pressure Coefficient (Cp):**
+                - Negative Cp = Lower pressure (suction)
+                - Positive Cp = Higher pressure
+                - Upper surface typically has lower pressure (negative Cp)
+                - Lower surface has higher pressure (positive Cp)
+                - The difference creates lift!
+                """)
+        else:
+            st.warning("⚠️ No pressure coefficient data available")
+    
+    # Download results option
+    st.markdown("---")
+    if st.button("💾 Download Results as CSV"):
+        csv_data = pd.DataFrame({
+            'x': result["cp_x"],
+            'Cp': result["cp_values"]
+        })
+        csv = csv_data.to_csv(index=False)
+        st.download_button(
+            label="Download Cp Data",
+            data=csv,
+            file_name=f"{last_params['filename'].replace('.dat', '')}_cp_results.csv",
+            mime="text/csv"
+        )
+
+elif uploaded_file is not None:
+    st.info("⚙️ Parameters set. Click '🚀 Run Analysis' button above to start simulation.")
 
 else:
     # Show instructions when no file is uploaded
