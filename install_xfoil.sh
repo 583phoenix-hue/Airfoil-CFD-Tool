@@ -128,12 +128,15 @@ if [ -n "$BIN_DIR" ]; then
     sed -i 's/CC = cc/CC = gcc/g' Makefile
     sed -i 's/FFLAGS = /FFLAGS = -fallow-argument-mismatch /g' Makefile
     
-    # Remove ALL X11 dependencies
+    # Remove ALL X11 library references completely
     sed -i 's/-lX11//g' Makefile
-    sed -i 's/-lXext//g' Makefile  
-    sed -i 's/\/usr\/X11R6\/lib//g' Makefile
-    sed -i 's/\/usr\/X11\/include//g' Makefile
-    sed -i 's/\/usr\/lib\/x86_64-linux-gnu//g' Makefile
+    sed -i 's/-lXext//g' Makefile
+    sed -i 's/-L \/usr\/X11R6\/lib//g' Makefile
+    sed -i 's/-L\/usr\/X11R6\/lib//g' Makefile
+    sed -i 's/-L \/usr\/lib\/x86_64-linux-gnu//g' Makefile
+    sed -i 's/-L\/usr\/lib\/x86_64-linux-gnu//g' Makefile
+    sed -i 's/-L  / /g' Makefile
+    sed -i 's/-L / /g' Makefile
     
     # Point to our dummy plotlib
     sed -i 's|PLTOBJ = .*|PLTOBJ = ../plotlib/libPlt.a|g' Makefile
