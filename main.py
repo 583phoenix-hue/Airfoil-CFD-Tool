@@ -167,8 +167,11 @@ def run_xfoil_sync(coords_file: str, reynolds: float, alpha: float, work_dir: st
             "QUIT"
         ]
     else:
-        # Linux with Xvfb - let XFOIL use graphics normally
+        # Linux with Xvfb - disable graphics properly
         commands = [
+            "PLOP",
+            "G",
+            "",
             f"LOAD {coords_filename}",
             "PANE",
             "OPER",
@@ -185,8 +188,8 @@ def run_xfoil_sync(coords_file: str, reynolds: float, alpha: float, work_dir: st
         
         # Run XFOIL in isolated work directory
         if not IS_WINDOWS:
-            # Use Xvfb to provide virtual display
-            xvfb_cmd = ['xvfb-run', '-a', '--server-args=-screen 0 1024x768x24', XFOIL_EXE]
+            # Use Xvfb to provide virtual display - FIXED FLAG
+            xvfb_cmd = ['xvfb-run', '-a', '-s', '-screen 0 1024x768x24', XFOIL_EXE]
             proc = subprocess.Popen(
                 xvfb_cmd,
                 stdin=subprocess.PIPE,
