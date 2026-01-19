@@ -4,8 +4,10 @@ import re
 import platform
 import time
 import uuid
+import shutil
 from fastapi import FastAPI, UploadFile, Form, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from anyio import to_thread
 
 app = FastAPI(title="Student Airfoil CFD Tool")
 
@@ -30,9 +32,7 @@ else:
 def parse_dat_file(file_path: str):
     """
     Parse airfoil coordinates from .dat file.
-    Handles multiple formats:
-    - Selig format (continuous list from TE->upper->LE->lower->TE)
-    - Lednicer format (two separate sections: upper then lower)
+    Handles multiple formats including Selig and Lednicer.
     """
     coords = []
     
@@ -49,7 +49,7 @@ def parse_dat_file(file_path: str):
             if not stripped:
                 continue
             
-            # Skip lines that look like headers (all text or single numbers)
+            # Skip lines that look like headers
             parts = stripped.split()
             if len(parts) < 2:
                 continue
@@ -71,7 +71,7 @@ def parse_dat_file(file_path: str):
                 detail=f"Insufficient valid coordinates. Found {len(data_lines)} points, need at least 10."
             )
         
-        # Detect format: Check if coordinates are split into two sections
+        # Detect format and merge sections if needed
         coords = detect_and_merge_sections(data_lines)
         
         return coords
@@ -83,20 +83,15 @@ def parse_dat_file(file_path: str):
 
 def detect_and_merge_sections(data_lines):
     """
-    Detect if airfoil data is in two sections (Lednicer format) or continuous (Selig).
-    Returns merged coordinates in Selig format: TE -> upper -> LE -> lower -> TE
+    Detect if airfoil data is in two sections (Lednicer format).
+    Returns merged coordinates, trusting XFOIL's PANE to handle the rest.
     """
     
     x_coords = [pt[0] for pt in data_lines]
-    y_coords = [pt[1] for pt in data_lines]
     
-    # Find where x goes back to 0 (indicating start of second section)
-    # Clark Y format: upper surface (1→0), then lower surface (0→1)
+    # Find where x returns to near 0 after being at higher values
     section_break = None
-    
-    # Look for the point where x returns to near 0 after being at 1
     for i in range(1, len(data_lines)):
-        # If we find x≈0 after we've been at higher x values
         if x_coords[i] < 0.01 and x_coords[i-1] > 0.5:
             section_break = i
             break
@@ -106,80 +101,27 @@ def detect_and_merge_sections(data_lines):
         upper = data_lines[:section_break]
         lower = data_lines[section_break:]
         
-        print(f"DEBUG: Detected Lednicer format")
-        print(f"  Upper section: {len(upper)} points, x from {upper[0][0]:.3f} to {upper[-1][0]:.3f}")
-        print(f"  Lower section: {len(lower)} points, x from {lower[0][0]:.3f} to {lower[-1][0]:.3f}")
+        print(f"DEBUG: Detected Lednicer format with {len(upper)} upper, {len(lower)} lower points")
         
-        # Upper surface should go from TE to LE (x: 1→0)
+        # Upper should go from TE to LE
         if upper[0][0] < upper[-1][0]:
-            print(f"  Reversing upper surface")
             upper = list(reversed(upper))
         
-        # Lower surface should go from LE to TE (x: 0→1)
+        # Lower should go from LE to TE
         if lower[0][0] > lower[-1][0]:
-            print(f"  Reversing lower surface")
             lower = list(reversed(lower))
         
-        # XFOIL wants: start at TE upper, go to LE, then LE to TE lower
-        # So: upper (TE→LE) + lower (LE→TE)
         merged = upper + lower
-        
     else:
-        # Single continuous section (Selig format)
-        print(f"DEBUG: Detected Selig format (continuous)")
+        # Single continuous section - trust it as-is
+        print(f"DEBUG: Single section format with {len(data_lines)} points")
         merged = data_lines
     
-    # Remove duplicate trailing edge point if it exists
+    # Remove duplicate trailing edge if exists
     if len(merged) > 1 and abs(merged[0][0] - merged[-1][0]) < 0.001 and abs(merged[0][1] - merged[-1][1]) < 0.001:
         merged = merged[:-1]
     
-    print(f"DEBUG: Final merged: {len(merged)} points, x from {merged[0][0]:.3f} to {merged[-1][0]:.3f}")
-    
     return merged
-
-def reorder_to_xfoil_standard(coords):
-    """
-    Ensure coordinates are in XFOIL standard format.
-    XFOIL expects: Start from TE (upper), go to LE, then back to TE (lower).
-    
-    Format should be: TE_upper -> ... -> LE -> ... -> TE_lower
-    """
-    if len(coords) < 3:
-        return coords
-    
-    x_vals = [c[0] for c in coords]
-    y_vals = [c[1] for c in coords]
-    
-    # Find leading edge (minimum x)
-    le_idx = x_vals.index(min(x_vals))
-    
-    print(f"DEBUG: LE at index {le_idx}, x={coords[le_idx][0]:.4f}, y={coords[le_idx][1]:.4f}")
-    
-    # Check current order
-    # If starting point is at TE (x close to 1), we're probably good
-    if x_vals[0] > 0.9:
-        print(f"DEBUG: Already starts at TE (x={x_vals[0]:.4f}), keeping order")
-        return coords
-    
-    # If starting at LE (x close to 0), need to reorder
-    if x_vals[0] < 0.1:
-        print(f"DEBUG: Starts at LE (x={x_vals[0]:.4f}), reordering...")
-        
-        # Find where upper surface ends (at TE, x≈1, y>0)
-        # Split at LE, then recombine starting from TE upper
-        upper = coords[:le_idx+1]  # From start to LE
-        lower = coords[le_idx+1:]   # From LE to end
-        
-        # Reverse upper so it goes TE→LE instead of LE→TE
-        upper_reversed = list(reversed(upper))
-        
-        reordered = upper_reversed + lower
-        print(f"DEBUG: Reordered to start from TE")
-        return reordered
-    
-    # Otherwise, assume it's already in correct format
-    print(f"DEBUG: Format looks correct, keeping as-is")
-    return coords
 
 def extract_aerodynamic_coefficients(stdout: str):
     """Extract CL, CD, and other coefficients from XFOIL output."""
@@ -196,25 +138,22 @@ def extract_aerodynamic_coefficients(stdout: str):
             coefficients[key] = float(match.group(1))
     return coefficients
 
-def run_xfoil(coords_file: str, reynolds: float, alpha: float):
-    """Run XFOIL simulation and return results."""
-    run_id = str(uuid.uuid4())[:8]
+def run_xfoil_sync(coords_file: str, reynolds: float, alpha: float, work_dir: str):
+    """
+    Run XFOIL simulation synchronously (will be called in a thread).
+    Uses isolated work directory to prevent race conditions.
+    """
+    # Simple filenames - XFOIL runs in work_dir
+    coords_filename = "airfoil.dat"
+    cp_filename = "cp_output.txt"
     
-    # Use just filenames (no paths) to avoid Windows space issues
-    coords_filename = f"airfoil_{run_id}.dat"
-    cp_filename = f"cp_{run_id}.txt"
+    # Copy coords file to work directory
+    work_coords = os.path.join(work_dir, coords_filename)
+    shutil.copy(coords_file, work_coords)
     
-    coords_path = os.path.join(TMP_DIR, coords_filename)
-    cp_out_path = os.path.join(TMP_DIR, cp_filename)
+    cp_out_path = os.path.join(work_dir, cp_filename)
     
-    # Copy input file to working directory with simple name
-    import shutil
-    shutil.copy(coords_file, coords_path)
-    
-    if os.path.exists(cp_out_path):
-        os.remove(cp_out_path)
-
-    # OS-specific XFOIL commands - use ONLY filenames, not full paths
+    # OS-specific XFOIL commands
     if IS_WINDOWS:
         commands = [
             f"LOAD {coords_filename}",
@@ -228,9 +167,8 @@ def run_xfoil(coords_file: str, reynolds: float, alpha: float):
             "QUIT"
         ]
     else:
-        # Headless Linux (Render)
+        # Linux with Xvfb - let XFOIL use graphics normally
         commands = [
-            "PLOP", "G", "",  # Disable graphics
             f"LOAD {coords_filename}",
             "PANE",
             "OPER",
@@ -238,70 +176,69 @@ def run_xfoil(coords_file: str, reynolds: float, alpha: float):
             "ITER 200",
             f"ALFA {alpha}",
             f"CPWR {cp_filename}",
-            "",  # Confirm write
+            "",
             "QUIT"
         ]
 
     try:
         input_str = "\n".join(commands) + "\n"
-        proc = subprocess.Popen(
-            [XFOIL_EXE],
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            cwd=TMP_DIR
-        )
         
-        stdout, stderr = proc.communicate(input=input_str, timeout=60)
+        # Run XFOIL in isolated work directory
+        if not IS_WINDOWS:
+            # Use Xvfb to provide virtual display
+            xvfb_cmd = ['xvfb-run', '-a', '--server-args=-screen 0 1024x768x24', XFOIL_EXE]
+            proc = subprocess.Popen(
+                xvfb_cmd,
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                cwd=work_dir
+            )
+        else:
+            proc = subprocess.Popen(
+                [XFOIL_EXE],
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                cwd=work_dir
+            )
+        
+        stdout, stderr = proc.communicate(input=input_str, timeout=90)
         
         # Give filesystem time to write
-        time.sleep(0.5)
+        time.sleep(0.3)
         
-        # DETAILED LOGGING FOR RENDER
+        # Debug logging
         print(f"\n=== XFOIL RUN DEBUG ===")
-        print(f"XFOIL Path: {XFOIL_EXE}")
-        print(f"Working Dir: {TMP_DIR}")
-        print(f"Coords File: {coords_filename}")
-        print(f"Output File: {cp_filename}")
+        print(f"Work Dir: {work_dir}")
         print(f"Reynolds: {reynolds}, Alpha: {alpha}")
         print(f"Return Code: {proc.returncode}")
         
         # Check for convergence issues
         if "VISCAL:  Convergence failed" in stdout:
-            print(f"CONVERGENCE FAILURE - Last 1000 chars of output:")
-            print(stdout[-1000:])
+            print(f"CONVERGENCE FAILURE")
             raise Exception(
-                "XFOIL convergence failed. Try: (1) different angle of attack, "
-                "(2) different Reynolds number, or (3) increase iterations."
+                "XFOIL convergence failed. Try different parameters."
             )
+        
+        # Check for other XFOIL errors
+        if "SIGFPE" in stderr or "Floating-point exception" in stderr:
+            print(f"FLOATING POINT ERROR:")
+            print(stderr[:500])
+            raise Exception("XFOIL encountered a numerical error. Try different parameters or check airfoil geometry.")
         
         # Verify output file exists
         if not os.path.exists(cp_out_path):
             print(f"\n=== OUTPUT FILE NOT FOUND ===")
-            print(f"Looking for: {cp_out_path}")
-            print(f"Files in {TMP_DIR}:")
-            try:
-                print(os.listdir(TMP_DIR))
-            except:
-                print("Could not list directory")
-            
-            print(f"\n=== XFOIL STDOUT (last 2000 chars) ===")
-            print(stdout[-2000:])
-            
-            print(f"\n=== XFOIL STDERR ===")
-            print(stderr if stderr else "(empty)")
-            
-            print(f"\n=== COORDS FILE CONTENT ===")
-            try:
-                with open(coords_file, 'r') as f:
-                    print(f.read()[:500])
-            except:
-                print("Could not read coords file")
-            
+            print(f"XFOIL STDOUT (last 1500 chars):")
+            print(stdout[-1500:])
+            print(f"\nXFOIL STDERR:")
+            print(stderr[:500] if stderr else "(empty)")
             raise Exception(
                 "XFOIL did not generate pressure distribution. "
-                "Check Render logs for detailed XFOIL output."
+                "Check airfoil geometry or try different parameters."
             )
 
         # Extract coefficients
@@ -312,7 +249,6 @@ def run_xfoil(coords_file: str, reynolds: float, alpha: float):
         with open(cp_out_path, "r") as f:
             for line in f:
                 clean = line.strip()
-                # Skip headers and empty lines
                 if not clean or any(c.isalpha() for c in clean) or clean.startswith("#"):
                     continue
                 parts = clean.split()
@@ -323,19 +259,17 @@ def run_xfoil(coords_file: str, reynolds: float, alpha: float):
                     except ValueError:
                         continue
         
-        # Cleanup
-        if os.path.exists(cp_out_path):
-            os.remove(cp_out_path)
-        
         if not cp_x:
             raise Exception("No pressure data extracted from XFOIL output")
+        
+        print(f"✅ SUCCESS: Got {len(cp_x)} pressure points")
             
         return cp_x, cp_values, coefficients
 
     except subprocess.TimeoutExpired:
         if 'proc' in locals():
             proc.kill()
-        raise Exception("XFOIL timeout (>60s). Try simpler parameters.")
+        raise Exception("XFOIL timeout (>90s). Try simpler parameters.")
     except Exception as e:
         raise e
 
@@ -351,12 +285,10 @@ async def root():
 @app.get("/health")
 async def health():
     """Detailed health check"""
-    # Check if XFOIL exists
     xfoil_exists = os.path.exists(XFOIL_EXE)
     if not xfoil_exists and not IS_WINDOWS:
         xfoil_exists = os.system(f"which {XFOIL_EXE} >/dev/null 2>&1") == 0
     
-    # Try to run XFOIL to verify it works
     xfoil_runnable = False
     xfoil_version = "unknown"
     if xfoil_exists:
@@ -370,7 +302,6 @@ async def health():
             )
             xfoil_runnable = result.returncode == 0 or "XFOIL" in result.stdout
             if "XFOIL" in result.stdout:
-                # Try to extract version
                 for line in result.stdout.split('\n'):
                     if "XFOIL" in line or "Version" in line:
                         xfoil_version = line.strip()
@@ -378,12 +309,18 @@ async def health():
         except Exception as e:
             xfoil_version = f"Error: {str(e)}"
     
+    # Check if Xvfb is available (Linux only)
+    xvfb_available = False
+    if not IS_WINDOWS:
+        xvfb_available = os.system("which xvfb-run >/dev/null 2>&1") == 0
+    
     return {
         "status": "healthy" if xfoil_exists and xfoil_runnable else "degraded",
         "xfoil_path": XFOIL_EXE,
         "xfoil_exists": xfoil_exists,
         "xfoil_runnable": xfoil_runnable,
         "xfoil_version": xfoil_version,
+        "xvfb_available": xvfb_available if not IS_WINDOWS else "N/A (Windows)",
         "tmp_dir": TMP_DIR,
         "platform": platform.system(),
         "tmp_dir_writable": os.access(TMP_DIR, os.W_OK)
@@ -398,10 +335,22 @@ async def upload_airfoil(
     """
     Upload and analyze an airfoil.
     Accepts .dat files in Selig or Lednicer format.
+    Uses isolated work directories and async execution.
     """
     run_id = str(uuid.uuid4())[:8]
-    raw_path = os.path.join(TMP_DIR, f"raw_{run_id}.dat")
-    fix_path = os.path.join(TMP_DIR, f"fix_{run_id}.dat")
+    
+    # Create isolated work directory for this request
+    work_dir = os.path.join(TMP_DIR, f"run_{run_id}")
+    os.makedirs(work_dir, exist_ok=True)
+    
+    raw_path = os.path.join(work_dir, f"raw.dat")
+    fix_path = os.path.join(work_dir, f"airfoil_fixed.dat")
+    
+    print(f"\n{'='*60}")
+    print(f"NEW REQUEST: {file.filename}")
+    print(f"Work Dir: {work_dir}")
+    print(f"Reynolds: {reynolds}, Alpha: {alpha}")
+    print(f"{'='*60}\n")
     
     try:
         # Save uploaded file
@@ -409,33 +358,29 @@ async def upload_airfoil(
         with open(raw_path, "wb") as f:
             f.write(content)
         
-        # Parse and fix coordinates
+        # Parse coordinates
         raw_coords = parse_dat_file(raw_path)
-        print(f"\n=== PARSING {file.filename} ===")
-        print(f"Raw coords: {len(raw_coords)} points")
+        print(f"Parsed: {len(raw_coords)} points")
         
-        fixed_coords = reorder_to_xfoil_standard(raw_coords)
-        print(f"Fixed coords: {len(fixed_coords)} points")
-        print(f"First point: x={fixed_coords[0][0]:.4f}, y={fixed_coords[0][1]:.4f}")
-        print(f"Last point: x={fixed_coords[-1][0]:.4f}, y={fixed_coords[-1][1]:.4f}")
-        
-        # Write XFOIL-compatible file
+        # Write XFOIL-compatible file (minimal reordering, trust PANE)
         with open(fix_path, "w") as f:
             f.write("AIRFOIL\n")
-            for x, y in fixed_coords:
+            for x, y in raw_coords:
                 f.write(f"  {x:.6f}  {y:.6f}\n")
         
-        print(f"Wrote XFOIL file to: {fix_path}")
+        # Run XFOIL in a separate thread to avoid blocking
+        cp_x, cp_values, coefficients = await to_thread.run_sync(
+            run_xfoil_sync, fix_path, reynolds, alpha, work_dir
+        )
         
-        # Run XFOIL
-        cp_x, cp_values, coefficients = run_xfoil(fix_path, reynolds, alpha)
+        print(f"✅ Analysis complete")
         
         return {
             "success": True,
             "message": "Analysis completed successfully",
             "coords_before": raw_coords,
-            "coords_after": fixed_coords,
-            "num_points": len(fixed_coords),
+            "coords_after": raw_coords,  # Trusting PANE, not modifying
+            "num_points": len(raw_coords),
             "cp_x": cp_x,
             "cp_values": cp_values,
             "coefficients": coefficients
@@ -444,12 +389,16 @@ async def upload_airfoil(
     except HTTPException:
         raise
     except Exception as e:
+        print(f"❌ ERROR: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
     finally:
-        # Cleanup temp files
-        for p in [raw_path, fix_path]:
-            if os.path.exists(p):
-                os.remove(p)
+        # Cleanup work directory
+        try:
+            if os.path.exists(work_dir):
+                shutil.rmtree(work_dir)
+                print(f"Cleaned up: {work_dir}")
+        except Exception as e:
+            print(f"Warning: Could not cleanup {work_dir}: {e}")
 
 if __name__ == "__main__":
     import uvicorn
