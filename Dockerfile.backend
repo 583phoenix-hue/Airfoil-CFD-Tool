@@ -2,54 +2,17 @@ FROM python:3.11-slim
 
 WORKDIR /app
 
-# Install build dependencies, X11 libraries, AND Xvfb
+# Install XFOIL from Debian repos (pre-compiled, headless-ready) AND Xvfb
 RUN apt-get update && apt-get install -y \
-    gfortran \
-    gcc \
-    g++ \
-    make \
-    wget \
-    libx11-dev \
-    libx11-6 \
-    libgfortran5 \
+    xfoil \
     xvfb \
     && rm -rf /var/lib/apt/lists/*
 
-# Set XFOIL path
-ENV XFOIL_PATH=/usr/local/bin/xfoil
+# Set XFOIL path environment variable
+ENV XFOIL_PATH=/usr/bin/xfoil
 
-# Download and compile XFOIL
-RUN wget -q https://web.mit.edu/drela/Public/web/xfoil/xfoil6.99.tgz && \
-    tar -xzf xfoil6.99.tgz && \
-    # Find the XFOIL directory (case-insensitive)
-    XFOIL_DIR=$(find . -maxdepth 2 -type d -iname "xfoil" | head -1) && \
-    cd $XFOIL_DIR && \
-    # Patch all Makefiles for modern compilers
-    find . -name "Makefile*" -exec sed -i 's/FC = f77/FC = gfortran/g' {} + && \
-    find . -name "Makefile*" -exec sed -i 's/CC = cc/CC = gcc/g' {} + && \
-    find . -name "Makefile*" -exec sed -i 's/FFLAGS = /FFLAGS = -O2 -fallow-argument-mismatch /g' {} + && \
-    find . -name "Makefile*" -exec sed -i 's/FFLOPT = /FFLOPT = -O2 -fallow-argument-mismatch /g' {} + && \
-    # Compile plotlib
-    PLOTLIB=$(find . -maxdepth 2 -type d -iname "plotlib" | head -1) && \
-    cd $PLOTLIB && \
-    make libPlt_gSP.a && \
-    ln -sf libPlt_gSP.a libPlt_gDP.a && \
-    # Compile XFOIL
-    BIN_DIR=$(find $XFOIL_DIR -maxdepth 2 -type d -iname "bin" | head -1) && \
-    cd $BIN_DIR && \
-    # Fix library paths for modern systems
-    sed -i 's|/usr/X11R6/lib|/usr/lib/x86_64-linux-gnu|g' Makefile && \
-    sed -i 's|/usr/X11/include|/usr/include|g' Makefile && \
-    make xfoil && \
-    # Install XFOIL
-    cp xfoil /usr/local/bin/ && \
-    chmod +x /usr/local/bin/xfoil && \
-    # Cleanup
-    cd /app && \
-    rm -rf xfoil6.99.tgz Xfoil* xfoil*
-
-# Verify XFOIL installation
-RUN which xfoil && ls -lh /usr/local/bin/xfoil
+# Verify XFOIL and Xvfb are installed
+RUN which xfoil && which xvfb-run
 
 # Install Python dependencies
 COPY requirements.txt .
@@ -58,12 +21,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copy application
 COPY main.py .
 
-# Expose port (Render will set PORT env var)
 EXPOSE 8000
 
-# Health check
-HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
-    CMD python -c "import requests; requests.get('http://localhost:8000/health', timeout=5)" || exit 1
-
-# Run with port from environment
-CMD uvicorn main:app --host 0.0.0.0 --port ${PORT:-8000}
+# Run FastAPI
+CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
