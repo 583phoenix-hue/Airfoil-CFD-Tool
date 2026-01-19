@@ -2,17 +2,50 @@ FROM python:3.11-slim
 
 WORKDIR /app
 
-# Install XFOIL from Debian repos (pre-compiled, headless-ready) AND Xvfb
+# Install build dependencies
 RUN apt-get update && apt-get install -y \
-    xfoil \
-    xvfb \
+    gfortran \
+    gcc \
+    make \
+    wget \
     && rm -rf /var/lib/apt/lists/*
 
-# Set XFOIL path environment variable
-ENV XFOIL_PATH=/usr/bin/xfoil
+# Download and compile XFOIL without X11 graphics
+RUN wget -q https://web.mit.edu/drela/Public/web/xfoil/xfoil6.99.tgz && \
+    tar -xzf xfoil6.99.tgz && \
+    XFOIL_DIR=$(find . -maxdepth 2 -type d -iname "xfoil" | head -1) && \
+    cd $XFOIL_DIR && \
+    # Patch Makefiles for modern compilers
+    find . -name "Makefile*" -exec sed -i 's/FC = f77/FC = gfortran/g' {} + && \
+    find . -name "Makefile*" -exec sed -i 's/CC = cc/CC = gcc/g' {} + && \
+    find . -name "Makefile*" -exec sed -i 's/FFLAGS = /FFLAGS = -O2 -fallow-argument-mismatch /g' {} + && \
+    # Compile plotlib WITHOUT X11
+    PLOTLIB=$(find . -maxdepth 2 -type d -iname "plotlib" | head -1) && \
+    cd $PLOTLIB && \
+    # Remove X11 dependencies from plotlib
+    sed -i 's/-lX11//g' Makefile* && \
+    sed -i 's/LIBS.*X11.*/LIBS =/g' Makefile* && \
+    make libPlt.a 2>/dev/null || make libPlt_gSP.a && \
+    # Create symlink for compatibility
+    ln -sf libPlt_gSP.a libPlt_gDP.a 2>/dev/null || ln -sf libPlt.a libPlt_gDP.a && \
+    # Compile XFOIL
+    BIN_DIR=$(find $XFOIL_DIR -maxdepth 2 -type d -iname "bin" | head -1) && \
+    cd $BIN_DIR && \
+    # Remove X11 from XFOIL binary linking
+    sed -i 's/-lX11//g' Makefile && \
+    sed -i 's/PLTLIB.*X11.*/PLTLIB = -L$(PLOTLIB) -lPlt_gDP/g' Makefile && \
+    make xfoil && \
+    cp xfoil /usr/local/bin/ && \
+    chmod +x /usr/local/bin/xfoil && \
+    # Cleanup
+    cd /app && \
+    rm -rf xfoil6.99.tgz Xfoil* xfoil*
 
-# Verify XFOIL and Xvfb are installed
-RUN which xfoil && which xvfb-run
+# Set XFOIL path
+ENV XFOIL_PATH=/usr/local/bin/xfoil
+
+# Verify installation
+RUN which xfoil
 
 # Install Python dependencies
 COPY requirements.txt .
@@ -23,5 +56,4 @@ COPY main.py .
 
 EXPOSE 8000
 
-# Run FastAPI
 CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]

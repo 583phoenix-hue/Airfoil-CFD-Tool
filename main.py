@@ -167,11 +167,8 @@ def run_xfoil_sync(coords_file: str, reynolds: float, alpha: float, work_dir: st
             "QUIT"
         ]
     else:
-        # Linux with Xvfb - disable graphics properly
+        # Linux with Xvfb - let XFOIL use graphics normally
         commands = [
-            "PLOP",
-            "G",
-            "",
             f"LOAD {coords_filename}",
             "PANE",
             "OPER",
@@ -188,8 +185,8 @@ def run_xfoil_sync(coords_file: str, reynolds: float, alpha: float, work_dir: st
         
         # Run XFOIL in isolated work directory
         if not IS_WINDOWS:
-            # Use Xvfb to provide virtual display - FIXED FLAG
-            xvfb_cmd = ['xvfb-run', '-a', '-s', '-screen 0 1024x768x24', XFOIL_EXE]
+            # Use Xvfb to provide virtual display
+            xvfb_cmd = ['xvfb-run', '-a', '--server-args=-screen 0 1024x768x24', XFOIL_EXE]
             proc = subprocess.Popen(
                 xvfb_cmd,
                 stdin=subprocess.PIPE,
@@ -312,10 +309,8 @@ async def health():
         except Exception as e:
             xfoil_version = f"Error: {str(e)}"
     
-    # Check if Xvfb is available (Linux only)
-    xvfb_available = False
-    if not IS_WINDOWS:
-        xvfb_available = os.system("which xvfb-run >/dev/null 2>&1") == 0
+    # Xvfb not needed - we compiled without X11
+    xvfb_available = "Not needed (compiled without X11)"
     
     return {
         "status": "healthy" if xfoil_exists and xfoil_runnable else "degraded",
@@ -323,7 +318,7 @@ async def health():
         "xfoil_exists": xfoil_exists,
         "xfoil_runnable": xfoil_runnable,
         "xfoil_version": xfoil_version,
-        "xvfb_available": xvfb_available if not IS_WINDOWS else "N/A (Windows)",
+        "xvfb_available": xvfb_available,
         "tmp_dir": TMP_DIR,
         "platform": platform.system(),
         "tmp_dir_writable": os.access(TMP_DIR, os.W_OK)
