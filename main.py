@@ -84,17 +84,36 @@ def parse_dat_file(file_path: str):
 def detect_and_merge_sections(data_lines):
     """
     Detect if airfoil data is in two sections (Lednicer format).
-    Returns merged coordinates, trusting XFOIL's PANE to handle the rest.
+    Returns merged coordinates in XFOIL format: TE upper -> LE -> TE lower.
     """
     
     x_coords = [pt[0] for pt in data_lines]
+    y_coords = [pt[1] for pt in data_lines]
     
-    # Find where x returns to near 0 after being at higher values
+    # Method 1: Look for coordinate jump (classic Lednicer break)
+    # This happens when we go from near LE back away from LE
     section_break = None
-    for i in range(1, len(data_lines)):
-        if x_coords[i] < 0.01 and x_coords[i-1] > 0.5:
+    for i in range(1, len(data_lines) - 1):
+        # Look for a jump where x increases after reaching minimum
+        # or where we have a discontinuity in the coordinate sequence
+        x_prev, x_curr = x_coords[i-1], x_coords[i]
+        
+        # Classic Lednicer: after reaching LE (x≈0), x jumps to small positive value
+        if x_prev < 0.01 and x_curr > x_prev + 0.005 and x_curr < 0.1:
             section_break = i
+            print(f"DEBUG: Found section break at index {i} (x jump from {x_prev:.5f} to {x_curr:.5f})")
             break
+    
+    # Method 2: Check if we visit LE (x≈0) twice - another Lednicer indicator
+    if section_break is None:
+        le_indices = [i for i, x in enumerate(x_coords) if x < 0.01]
+        if len(le_indices) > 1:
+            # Find the gap between LE visits
+            for j in range(len(le_indices) - 1):
+                if le_indices[j+1] - le_indices[j] > 1:
+                    section_break = le_indices[j] + 1
+                    print(f"DEBUG: Found section break between LE visits at index {section_break}")
+                    break
     
     if section_break is not None:
         # Two-section format (Lednicer)
@@ -102,24 +121,47 @@ def detect_and_merge_sections(data_lines):
         lower = data_lines[section_break:]
         
         print(f"DEBUG: Detected Lednicer format with {len(upper)} upper, {len(lower)} lower points")
+        print(f"DEBUG: Upper section: x from {upper[0][0]:.4f} to {upper[-1][0]:.4f}")
+        print(f"DEBUG: Lower section: x from {lower[0][0]:.4f} to {lower[-1][0]:.4f}")
         
-        # Upper should go from TE to LE
+        # XFOIL expects: TE (x=1) -> LE (x=0) on upper, then LE (x=0) -> TE (x=1) on lower
+        # Upper surface: should go from high x to low x (TE to LE)
         if upper[0][0] < upper[-1][0]:
             upper = list(reversed(upper))
+            print(f"DEBUG: Reversed upper surface")
         
-        # Lower should go from LE to TE
+        # Lower surface: should go from low x to high x (LE to TE)  
         if lower[0][0] > lower[-1][0]:
             lower = list(reversed(lower))
+            print(f"DEBUG: Reversed lower surface")
         
-        merged = upper + lower
+        # Check if we need to remove duplicate leading edge point
+        if len(upper) > 0 and len(lower) > 0:
+            if abs(upper[-1][0] - lower[0][0]) < 0.001 and abs(upper[-1][1] - lower[0][1]) < 0.001:
+                print(f"DEBUG: Removing duplicate LE point")
+                merged = upper + lower[1:]
+            else:
+                merged = upper + lower
+        else:
+            merged = upper + lower
+            
+        print(f"DEBUG: Final merged: {len(merged)} points, x from {merged[0][0]:.4f} to {merged[-1][0]:.4f}")
     else:
-        # Single continuous section - trust it as-is
+        # Single continuous section - check if it's already in correct order
         print(f"DEBUG: Single section format with {len(data_lines)} points")
-        merged = data_lines
+        
+        # Check if it starts near TE (x≈1)
+        if data_lines[0][0] < 0.5 and data_lines[-1][0] > 0.5:
+            # Starts at LE, ends at TE - need to reverse
+            merged = list(reversed(data_lines))
+            print(f"DEBUG: Reversed single section to start at TE")
+        else:
+            merged = data_lines
     
     # Remove duplicate trailing edge if exists
     if len(merged) > 1 and abs(merged[0][0] - merged[-1][0]) < 0.001 and abs(merged[0][1] - merged[-1][1]) < 0.001:
         merged = merged[:-1]
+        print(f"DEBUG: Removed duplicate TE point")
     
     return merged
 
@@ -138,10 +180,11 @@ def extract_aerodynamic_coefficients(stdout: str):
             coefficients[key] = float(match.group(1))
     return coefficients
 
-def run_xfoil_sync(coords_file: str, reynolds: float, alpha: float, work_dir: str):
+def run_xfoil_sync(coords_file: str, reynolds: float, alpha: float, work_dir: str, retry_simple: bool = False):
     """
     Run XFOIL simulation synchronously (will be called in a thread).
     Uses isolated work directory to prevent race conditions.
+    retry_simple: if True, use simpler XFOIL commands for problematic airfoils
     """
     # Simple filenames - XFOIL runs in work_dir
     coords_filename = "airfoil.dat"
@@ -153,32 +196,58 @@ def run_xfoil_sync(coords_file: str, reynolds: float, alpha: float, work_dir: st
     
     cp_out_path = os.path.join(work_dir, cp_filename)
     
-    # OS-specific XFOIL commands
-    if IS_WINDOWS:
-        commands = [
-            f"LOAD {coords_filename}",
-            "PANE",
-            "OPER",
-            f"VISC {reynolds}",
-            "ITER 150",
-            f"ALFA {alpha}",
-            f"CPWR {cp_filename}",
-            "",
-            "QUIT"
-        ]
+    # Choose command set based on retry mode
+    if retry_simple:
+        # Simplified commands for problematic airfoils
+        print("DEBUG: Using simplified XFOIL mode (no geometry refinement)")
+        if IS_WINDOWS:
+            commands = [
+                f"LOAD {coords_filename}",
+                "OPER",
+                f"VISC {reynolds}",
+                "ITER 80",
+                f"ALFA {alpha}",
+                f"CPWR {cp_filename}",
+                "",
+                "QUIT"
+            ]
+        else:
+            commands = [
+                f"LOAD {coords_filename}",
+                "OPER",
+                f"VISC {reynolds}",
+                "ITER 100",
+                f"ALFA {alpha}",
+                f"CPWR {cp_filename}",
+                "",
+                "QUIT"
+            ]
     else:
-        # Linux with Xvfb - let XFOIL use graphics normally
-        commands = [
-            f"LOAD {coords_filename}",
-            "PANE",
-            "OPER",
-            f"VISC {reynolds}",
-            "ITER 200",
-            f"ALFA {alpha}",
-            f"CPWR {cp_filename}",
-            "",
-            "QUIT"
-        ]
+        # Standard commands - simpler geometry handling
+        if IS_WINDOWS:
+            commands = [
+                f"LOAD {coords_filename}",
+                "PANE",
+                "OPER",
+                f"VISC {reynolds}",
+                "ITER 100",
+                f"ALFA {alpha}",
+                f"CPWR {cp_filename}",
+                "",
+                "QUIT"
+            ]
+        else:
+            commands = [
+                f"LOAD {coords_filename}",
+                "PANE",
+                "OPER",
+                f"VISC {reynolds}",
+                "ITER 150",
+                f"ALFA {alpha}",
+                f"CPWR {cp_filename}",
+                "",
+                "QUIT"
+            ]
 
     try:
         input_str = "\n".join(commands) + "\n"
@@ -205,7 +274,7 @@ def run_xfoil_sync(coords_file: str, reynolds: float, alpha: float, work_dir: st
                 cwd=work_dir
             )
         
-        stdout, stderr = proc.communicate(input=input_str, timeout=90)
+        stdout, stderr = proc.communicate(input=input_str, timeout=45)
         
         # Give filesystem time to write
         time.sleep(0.3)
@@ -269,7 +338,7 @@ def run_xfoil_sync(coords_file: str, reynolds: float, alpha: float, work_dir: st
     except subprocess.TimeoutExpired:
         if 'proc' in locals():
             proc.kill()
-        raise Exception("XFOIL timeout (>90s). Try simpler parameters.")
+        raise Exception("XFOIL timeout (>45s). This airfoil may have convergence issues. Try: lower Reynolds number, different angle of attack, or a simpler airfoil geometry.")
     except Exception as e:
         raise e
 
@@ -367,9 +436,27 @@ async def upload_airfoil(
                 f.write(f"  {x:.6f}  {y:.6f}\n")
         
         # Run XFOIL in a separate thread to avoid blocking
-        cp_x, cp_values, coefficients = await to_thread.run_sync(
-            run_xfoil_sync, fix_path, reynolds, alpha, work_dir
-        )
+        try:
+            cp_x, cp_values, coefficients = await to_thread.run_sync(
+                run_xfoil_sync, fix_path, reynolds, alpha, work_dir, False
+            )
+        except Exception as e:
+            # If first attempt fails with timeout, try simplified mode ONCE
+            if "timeout" in str(e).lower():
+                print("⚠️ First attempt timed out, retrying with simplified XFOIL commands (final attempt)...")
+                try:
+                    cp_x, cp_values, coefficients = await to_thread.run_sync(
+                        run_xfoil_sync, fix_path, reynolds, alpha, work_dir, True
+                    )
+                except Exception as retry_error:
+                    # If retry also fails, give up with helpful message
+                    print(f"❌ Retry also failed: {str(retry_error)}")
+                    raise HTTPException(
+                        status_code=500,
+                        detail=f"XFOIL failed to converge after 2 attempts. This airfoil may be incompatible with XFOIL at Re={reynolds:,.0f} and α={alpha}°. Try: (1) Lower Reynolds (100k-300k), (2) Different angle (0-3°), or (3) Different airfoil."
+                    )
+            else:
+                raise
         
         print(f"✅ Analysis complete")
         
@@ -390,13 +477,16 @@ async def upload_airfoil(
         print(f"❌ ERROR: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
     finally:
-        # Cleanup work directory
+        # Cleanup work directory (with retry for Windows)
         try:
             if os.path.exists(work_dir):
-                shutil.rmtree(work_dir)
+                # Give Windows time to release file handles
+                time.sleep(0.2)
+                shutil.rmtree(work_dir, ignore_errors=True)
                 print(f"Cleaned up: {work_dir}")
         except Exception as e:
             print(f"Warning: Could not cleanup {work_dir}: {e}")
+            # Not critical - OS will clean temp files eventually
 
 if __name__ == "__main__":
     import uvicorn
