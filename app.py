@@ -5,6 +5,7 @@ import plotly.graph_objects as go
 import plotly.express as px
 import numpy as np
 import os
+import time
 
 # Page configuration
 st.set_page_config(page_title="Airfoil CFD Tool", layout="wide", page_icon="✈️")
@@ -16,39 +17,49 @@ if 'last_params' not in st.session_state:
     st.session_state.last_params = None
 
 # Cached function for API calls
-@st.cache_data(ttl=3600, show_spinner=False, max_entries=50)  # Limit cache size
+@st.cache_data(ttl=3600, show_spinner=False, max_entries=50)
 def run_xfoil_analysis(file_content: bytes, filename: str, reynolds: float, alpha: float, backend_url: str):
     """
-    Run XFOIL analysis with caching.
-    If same file + parameters are requested, return cached result.
+    Run XFOIL analysis with caching and retry logic.
     """
-    import time
-    import hashlib
-    
-    # Add small delay to prevent rapid-fire requests
-    time.sleep(0.5)
-    
     url = f"{backend_url}/upload_airfoil/"
     
     files = {"file": (filename, file_content, "text/plain")}
     data = {"reynolds": reynolds, "alpha": alpha}
     
-    try:
-        response = requests.post(url, files=files, data=data, timeout=60)
-        
-        if response.status_code == 429:
-            raise Exception("Server is rate-limited. Please wait 30 seconds and try again.")
-        
-        if response.status_code != 200:
-            raise Exception(f"Server Error ({response.status_code}): {response.text}")
-        
-        return response.json()
-    except requests.exceptions.Timeout:
-        raise Exception("Request timeout - backend is taking too long (>60s)")
-    except requests.exceptions.ConnectionError:
-        raise Exception("Cannot connect to backend server")
-    except Exception as e:
-        raise Exception(str(e))
+    max_retries = 3
+    retry_delay = 5  # seconds
+    
+    for attempt in range(max_retries):
+        try:
+            response = requests.post(url, files=files, data=data, timeout=90)
+            
+            if response.status_code == 429:
+                if attempt < max_retries - 1:
+                    wait_time = retry_delay * (attempt + 1)
+                    raise Exception(f"Server busy. Retrying in {wait_time}s... (Attempt {attempt + 1}/{max_retries})")
+                else:
+                    raise Exception("Server is rate-limited. Please wait 60 seconds and try again.")
+            
+            if response.status_code != 200:
+                raise Exception(f"Server Error ({response.status_code}): {response.text}")
+            
+            return response.json()
+            
+        except requests.exceptions.Timeout:
+            if attempt < max_retries - 1:
+                continue
+            raise Exception("Request timeout - backend is taking too long (>90s)")
+        except requests.exceptions.ConnectionError:
+            raise Exception("Cannot connect to backend server. It may be starting up.")
+        except Exception as e:
+            error_msg = str(e)
+            if "Retrying" in error_msg and attempt < max_retries - 1:
+                time.sleep(retry_delay * (attempt + 1))
+                continue
+            raise Exception(error_msg)
+    
+    raise Exception("Max retries exceeded")
 
 # Custom CSS for better styling
 st.markdown("""
@@ -91,6 +102,8 @@ with st.sidebar:
         with the same parameters, you'll get instant results! 🚀
         
         This reduces server load and makes the tool faster for everyone.
+        
+        **Note:** Free tier has rate limits. Wait 30-60s between unique analyses.
         """)
     
     # Add educational info
@@ -191,7 +204,7 @@ if uploaded_file is not None and run_analysis:
         # Read file content for caching
         file_content = uploaded_file.getvalue()
         
-        with st.spinner("Computing... (this may be instant if cached)"):
+        with st.spinner("Computing... (this may take 30-60s on free tier, or be instant if cached)"):
             result = run_xfoil_analysis(
                 file_content=file_content,
                 filename=uploaded_file.name,
@@ -209,11 +222,23 @@ if uploaded_file is not None and run_analysis:
         }
         st.session_state.analyzing = False
         st.success("✅ Simulation completed successfully!")
-        st.rerun()  # Rerun to display results without the "Running" message
+        st.rerun()
     
     except Exception as e:
         st.session_state.analyzing = False
-        st.error(f"❌ Error: {str(e)}")
+        error_msg = str(e)
+        
+        # Special handling for rate limit with retry message
+        if "Retrying" in error_msg:
+            st.warning(f"⏳ {error_msg}")
+            time.sleep(1)
+            st.rerun()
+        else:
+            st.error(f"❌ Error: {error_msg}")
+            
+            # Add helpful tips
+            if "rate-limited" in error_msg.lower() or "429" in error_msg:
+                st.info("💡 **Tip:** The free tier has rate limits. Wait 60 seconds before trying again, or use a different airfoil/parameters to get cached results instantly.")
 
 # Display results if they exist in session state
 if st.session_state.results is not None:
@@ -295,7 +320,7 @@ if st.session_state.results is not None:
         st.plotly_chart(fig1, use_container_width=True)
         
         # Show coordinate statistics
-        with st.expander("📐 Geometry Details"):
+        with st.expander("🔍 Geometry Details"):
             st.write(f"**Number of points:** {len(coords_after)}")
             st.write(f"**Max thickness:** {(coords_after['y'].max() - coords_after['y'].min()):.4f}")
             st.write(f"**Chord length:** {coords_after['x'].max() - coords_after['x'].min():.4f}")
