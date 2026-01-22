@@ -198,23 +198,12 @@ def _run_xfoil_mode(coords_filename: str, cp_filename: str, work_dir: str, reyno
     if os.path.exists(cp_out_path):
         os.remove(cp_out_path)
     
-    # Build command sequence
-    if IS_WINDOWS:
-        # Windows: Use PANE (works well locally)
-        commands = [
-            f"LOAD {coords_filename}",
-            "PANE",
-            "OPER"
-        ]
-    else:
-        # Linux (Render): Use PPAR with 200 panels for better resolution
-        commands = [
-            f"LOAD {coords_filename}",
-            "PPAR",
-            "N", "200",  # Higher resolution for better Cd accuracy
-            "", "",      # Exit PPAR menu
-            "OPER"
-        ]
+    # Build command sequence - USE PANE ON BOTH PLATFORMS
+    commands = [
+        f"LOAD {coords_filename}",
+        "PANE",  # Same on Windows and Linux for consistency
+        "OPER"
+    ]
     
     # Add viscous or inviscid commands
     if viscous:
