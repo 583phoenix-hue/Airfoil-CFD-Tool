@@ -28,7 +28,7 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=ALLOWED_ORIGINS,
     allow_credentials=True,
-    allow_methods=["GET", "POST", "HEAD"],  # Added HEAD for health checks
+    allow_methods=["GET", "POST", "HEAD"],
     allow_headers=["*"],
 )
 
@@ -125,29 +125,21 @@ def detect_and_merge_sections(data_lines):
         print(f"DEBUG: Single section: {len(data_lines)} points")
         
         # Special case: Check if it's TE-to-TE format (starts AND ends at x≈1)
-        # Example: NACA 747A315
         if x_coords[0] > 0.99 and x_coords[-1] > 0.99:
-            # Find leading edge (minimum x)
             le_idx = x_coords.index(min(x_coords))
             
-            # Check point AFTER leading edge to determine surface order
             if le_idx + 1 < len(data_lines):
                 point_after_le_y = data_lines[le_idx + 1][1]
                 
-                # If y is negative after LE, we're on lower surface
-                # Correct order is: TE_upper -> LE -> TE_lower
-                # If we're on lower after LE, we're in correct order
                 if point_after_le_y < 0:
                     print(f"DEBUG: TE-to-TE format, correct order (upper->LE->lower)")
                     merged = data_lines
                 else:
-                    # Wrong order: TE_lower -> LE -> TE_upper, need to reverse
                     print(f"DEBUG: TE-to-TE format, reversing (was lower->LE->upper)")
                     merged = list(reversed(data_lines))
             else:
                 merged = data_lines
         else:
-            # Regular single section, trust as-is
             merged = data_lines
     
     # Remove duplicate TE if exists
@@ -180,8 +172,6 @@ def run_xfoil_sync(coords_file: str, reynolds: float, alpha: float, work_dir: st
     work_coords = os.path.join(work_dir, coords_filename)
     shutil.copy(coords_file, work_coords)
     
-    cp_out_path = os.path.join(work_dir, cp_filename)
-    
     # Try viscous mode first
     try:
         print("Trying VISCOUS mode...")
@@ -205,85 +195,54 @@ def _run_xfoil_mode(coords_filename: str, cp_filename: str, work_dir: str, reyno
     """Run XFOIL in viscous or inviscid mode."""
     cp_out_path = os.path.join(work_dir, cp_filename)
     
-    # Remove old output
     if os.path.exists(cp_out_path):
         os.remove(cp_out_path)
     
-    # === ONLY CHANGE: Use PPAR on Linux instead of PLOP+PANE ===
+    # Build command sequence
     if IS_WINDOWS:
-        if viscous:
-            commands = [
-                f"LOAD {coords_filename}",
-                "PANE",
-                "OPER",
-                f"VISC {reynolds}",
-                "ITER 100",
-                f"ALFA {alpha}",
-                f"CPWR {cp_filename}",
-                "",
-                "QUIT"
-            ]
-        else:
-            commands = [
-                f"LOAD {coords_filename}",
-                "PANE",
-                "OPER",
-                f"ALFA {alpha}",
-                f"CPWR {cp_filename}",
-                "",
-                "QUIT"
-            ]
+        # Windows: Use PANE (works well locally)
+        commands = [
+            f"LOAD {coords_filename}",
+            "PANE",
+            "OPER"
+        ]
     else:
-        # Linux: Use PPAR instead of PLOP+PANE (fixes panel angle issues)
-        if viscous:
-            commands = [
-                f"LOAD {coords_filename}",
-                "PPAR",
-                "N", "160",  # Explicitly set 160 panels
-                "", "",      # Exit PPAR
-                "OPER",
-                f"VISC {reynolds}",
-                "ITER 100",
-                f"ALFA {alpha}",
-                f"CPWR {cp_filename}",
-                "",
-                "QUIT"
-            ]
-        else:
-            commands = [
-                f"LOAD {coords_filename}",
-                "PPAR",
-                "N", "160",
-                "", "",
-                "OPER",
-                f"ALFA {alpha}",
-                f"CPWR {cp_filename}",
-                "",
-                "QUIT"
-            ]
+        # Linux (Render): Use PPAR with 200 panels for better resolution
+        commands = [
+            f"LOAD {coords_filename}",
+            "PPAR",
+            "N", "200",  # Higher resolution for better Cd accuracy
+            "", "",      # Exit PPAR menu
+            "OPER"
+        ]
+    
+    # Add viscous or inviscid commands
+    if viscous:
+        commands.extend([
+            f"VISC {reynolds}",
+            "ITER 100"
+        ])
+    
+    # Add analysis commands
+    commands.extend([
+        f"ALFA {alpha}",
+        f"CPWR {cp_filename}",
+        "",
+        "QUIT"
+    ])
 
     try:
         input_str = "\n".join(commands) + "\n"
         
-        # === ONLY CHANGE: Use xvfb-run on Linux ===
-        if IS_WINDOWS:
-            proc = subprocess.Popen(
-                [XFOIL_EXE],
-                stdin=subprocess.PIPE,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-                cwd=work_dir
-            )
-        else:
-            proc = subprocess.Popen(
-                ["xvfb-run", "-a", XFOIL_EXE],
-                stdin=subprocess.PIPE,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-                cwd=work_dir
-            )
+        # Run XFOIL directly (NO xvfb-run to avoid -8 crash)
+        proc = subprocess.Popen(
+            [XFOIL_EXE],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            cwd=work_dir
+        )
         
         stdout, stderr = proc.communicate(input=input_str, timeout=timeout)
         time.sleep(0.3)
@@ -342,7 +301,7 @@ def _run_xfoil_mode(coords_filename: str, cp_filename: str, work_dir: str, reyno
 async def root(request: Request):
     return {"status": "ok", "service": "Airfoil CFD API"}
 
-@app.head("/health")  # Added for Render health checks
+@app.head("/health")
 @app.get("/health")
 @limiter.limit("20/minute")
 async def health(request: Request):
