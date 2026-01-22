@@ -28,7 +28,7 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=ALLOWED_ORIGINS,
     allow_credentials=True,
-    allow_methods=["GET", "POST"],
+    allow_methods=["GET", "POST", "HEAD"],  # Added HEAD for health checks
     allow_headers=["*"],
 )
 
@@ -188,7 +188,6 @@ def run_xfoil_sync(coords_file: str, reynolds: float, alpha: float, work_dir: st
         return _run_xfoil_mode(coords_filename, cp_filename, work_dir, reynolds, alpha, viscous=True, timeout=45)
     except subprocess.TimeoutExpired:
         print("⚠️ Viscous timed out, trying INVISCID mode...")
-        # Fallback to inviscid (no Reynolds, faster, always converges)
         try:
             return _run_xfoil_mode(coords_filename, cp_filename, work_dir, reynolds, alpha, viscous=False, timeout=20)
         except Exception as e:
@@ -210,6 +209,7 @@ def _run_xfoil_mode(coords_filename: str, cp_filename: str, work_dir: str, reyno
     if os.path.exists(cp_out_path):
         os.remove(cp_out_path)
     
+    # === ONLY CHANGE: Use PPAR on Linux instead of PLOP+PANE ===
     if IS_WINDOWS:
         if viscous:
             commands = [
@@ -224,7 +224,6 @@ def _run_xfoil_mode(coords_filename: str, cp_filename: str, work_dir: str, reyno
                 "QUIT"
             ]
         else:
-            # Inviscid mode - no VISC command
             commands = [
                 f"LOAD {coords_filename}",
                 "PANE",
@@ -235,11 +234,13 @@ def _run_xfoil_mode(coords_filename: str, cp_filename: str, work_dir: str, reyno
                 "QUIT"
             ]
     else:
+        # Linux: Use PPAR instead of PLOP+PANE (fixes panel angle issues)
         if viscous:
             commands = [
-                "PLOP", "G", "",
                 f"LOAD {coords_filename}",
-                "PANE",
+                "PPAR",
+                "N", "160",  # Explicitly set 160 panels
+                "", "",      # Exit PPAR
                 "OPER",
                 f"VISC {reynolds}",
                 "ITER 100",
@@ -250,9 +251,10 @@ def _run_xfoil_mode(coords_filename: str, cp_filename: str, work_dir: str, reyno
             ]
         else:
             commands = [
-                "PLOP", "G", "",
                 f"LOAD {coords_filename}",
-                "PANE",
+                "PPAR",
+                "N", "160",
+                "", "",
                 "OPER",
                 f"ALFA {alpha}",
                 f"CPWR {cp_filename}",
@@ -263,14 +265,25 @@ def _run_xfoil_mode(coords_filename: str, cp_filename: str, work_dir: str, reyno
     try:
         input_str = "\n".join(commands) + "\n"
         
-        proc = subprocess.Popen(
-            [XFOIL_EXE],
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            cwd=work_dir
-        )
+        # === ONLY CHANGE: Use xvfb-run on Linux ===
+        if IS_WINDOWS:
+            proc = subprocess.Popen(
+                [XFOIL_EXE],
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                cwd=work_dir
+            )
+        else:
+            proc = subprocess.Popen(
+                ["xvfb-run", "-a", XFOIL_EXE],
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                cwd=work_dir
+            )
         
         stdout, stderr = proc.communicate(input=input_str, timeout=timeout)
         time.sleep(0.3)
@@ -308,7 +321,6 @@ def _run_xfoil_mode(coords_filename: str, cp_filename: str, work_dir: str, reyno
         
         print(f"✅ {mode} SUCCESS: {len(cp_x)} points")
         
-        # Add note if inviscid was used
         if not viscous:
             coefficients['note'] = 'inviscid'
         
@@ -330,6 +342,7 @@ def _run_xfoil_mode(coords_filename: str, cp_filename: str, work_dir: str, reyno
 async def root(request: Request):
     return {"status": "ok", "service": "Airfoil CFD API"}
 
+@app.head("/health")  # Added for Render health checks
 @app.get("/health")
 @limiter.limit("20/minute")
 async def health(request: Request):
