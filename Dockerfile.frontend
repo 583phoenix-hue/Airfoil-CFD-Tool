@@ -6,8 +6,10 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy application
+# Copy application files
 COPY app.py .
+# Copy the pages directory with all page files
+COPY pages/ ./pages/
 
 # Expose Streamlit port
 EXPOSE 8501
