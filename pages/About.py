@@ -174,7 +174,7 @@ with dev_col2:
     col_img1, col_img2, col_img3 = st.columns([1, 2, 1])
     with col_img2:
         try:
-            st.image("developer.jpg", use_column_width=True)
+            st.image("developer.jpg", use_container_width=True)
         except:
             st.markdown('<div style="text-align: center; font-size: 5rem; margin-bottom: 1rem;">👤</div>', unsafe_allow_html=True)
     
