@@ -10,6 +10,8 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY app.py .
 # Copy the pages directory with all page files
 COPY pages/ ./pages/
+# Copy the developer image
+COPY developer.jpg .
 
 # Expose Streamlit port
 EXPOSE 8501
