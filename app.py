@@ -1,6 +1,5 @@
 import streamlit as st
-import streamlit.components.v1 as components
-import time
+from db_utils import init_db, get_analysis_count
 
 # Page configuration
 st.set_page_config(
@@ -10,14 +9,8 @@ st.set_page_config(
     initial_sidebar_state="collapsed"
 )
 
-# GoatCounter tracking - Load this first (outside iframe sandbox)
-components.html(
-    """
-    <script data-goatcounter="https://phoenix583.goatcounter.com/count"
-            async src="//gc.zgo.at/count.js"></script>
-    """,
-    height=0,
-)
+# Initialize database on app startup
+init_db()
 
 # Custom CSS
 st.markdown("""
@@ -113,6 +106,7 @@ col1, col2, col3 = st.columns([1, 1, 1])
 
 with col2:
     if st.button("🚀 Analyze Airfoil", key="analyze", use_container_width=True, type="primary"):
+        # Increment counter is now handled in Airfoil_Analysis.py when analysis actually runs
         st.switch_page("pages/Airfoil_Analysis.py")
     
     if st.button("📖 About AeroLab", key="about", use_container_width=True):
@@ -120,18 +114,25 @@ with col2:
 
 st.markdown("<br><br>", unsafe_allow_html=True)
 
-# Visitor Counter - Using GoatCounter's SVG badge (CORS-free, reliable)
-st.markdown(f"""
-    <div class="visitor-counter">
-        <div class="counter-label">👥 Total Visitors</div>
-        <div style="display: flex; justify-content: center; margin: 1rem 0;">
-            <img src="https://phoenix583.goatcounter.com/counter//total.svg?nocache={int(time.time())}" 
-                 style="height: 70px; filter: invert(47%) sepia(87%) saturate(345%) hue-rotate(190deg) brightness(95%) contrast(92%);" 
-                 alt="Visitor Count">
+# Analysis Counter - Using PostgreSQL Database
+analysis_count = get_analysis_count()
+
+if analysis_count is not None:
+    st.markdown(f"""
+        <div class="visitor-counter">
+            <div class="counter-label">🔬 Total Analyses Performed</div>
+            <div class="counter-number">{analysis_count:,}</div>
+            <div class="counter-description">Airfoils analyzed by aerospace enthusiasts worldwide</div>
         </div>
-        <div class="counter-description">Aerospace enthusiasts analyzing airfoils worldwide</div>
-    </div>
-""", unsafe_allow_html=True)
+    """, unsafe_allow_html=True)
+else:
+    # Fallback if database is not available
+    st.markdown("""
+        <div class="visitor-counter">
+            <div class="counter-label">🔬 Analysis Counter</div>
+            <div class="counter-description">Database initializing...</div>
+        </div>
+    """, unsafe_allow_html=True)
 
 st.markdown("<br>", unsafe_allow_html=True)
 
@@ -186,7 +187,7 @@ with step_col3:
     st.markdown("#### 3️⃣ Analyze")
     st.markdown("Get lift, drag, moment coefficients, and detailed pressure distributions")
 
-# Footer (GoatCounter tracking already loaded at top)
+# Footer
 st.markdown("""
     <div class="footer">
         <p>Built with Streamlit • Powered by XFOIL • For Educational Use</p>

@@ -8,6 +8,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy application files
 COPY app.py .
+COPY db_utils.py .
 # Copy the pages directory with all page files
 COPY pages/ ./pages/
 # Copy the developer image

@@ -9,3 +9,4 @@ python-multipart
 plotly
 anyio
 slowapi
+psycopg2-binary

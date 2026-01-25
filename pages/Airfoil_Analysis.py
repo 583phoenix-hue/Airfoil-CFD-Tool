@@ -5,6 +5,7 @@ import plotly.graph_objects as go
 import numpy as np
 import os
 import time
+from db_utils import increment_analysis_count
 
 # Page configuration
 st.set_page_config(page_title="Airfoil Analysis - AeroLab", layout="wide", page_icon="✈️")
@@ -197,6 +198,11 @@ if uploaded_file is not None and run_analysis:
                 backend_url=backend_url
             )
         
+        # Increment the database counter on successful analysis
+        new_count = increment_analysis_count()
+        if new_count:
+            st.toast(f"✅ Analysis #{new_count:,} completed!", icon="🎉")
+        
         st.session_state.results = result
         st.session_state.last_params = {
             'reynolds': reynolds,
@@ -312,7 +318,7 @@ if st.session_state.results is not None:
         
         st.plotly_chart(fig1, use_container_width=True)
         
-        with st.expander("📐 Geometry Details"):
+        with st.expander("🔍 Geometry Details"):
             st.write(f"**Number of points:** {len(coords_after)}")
             st.write(f"**Max thickness:** {(coords_after['y'].max() - coords_after['y'].min()):.4f}")
             st.write(f"**Chord length:** {coords_after['x'].max() - coords_after['x'].min():.4f}")
