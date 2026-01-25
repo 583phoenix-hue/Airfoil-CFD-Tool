@@ -1,4 +1,6 @@
 import streamlit as st
+import streamlit.components.v1 as components
+import time
 
 # Page configuration
 st.set_page_config(
@@ -6,6 +8,15 @@ st.set_page_config(
     layout="wide", 
     page_icon="✈️",
     initial_sidebar_state="collapsed"
+)
+
+# GoatCounter tracking - Load this first (outside iframe sandbox)
+components.html(
+    """
+    <script data-goatcounter="https://phoenix583.goatcounter.com/count"
+            async src="//gc.zgo.at/count.js"></script>
+    """,
+    height=0,
 )
 
 # Custom CSS
@@ -109,38 +120,17 @@ with col2:
 
 st.markdown("<br><br>", unsafe_allow_html=True)
 
-# Visitor Counter - Using GoatCounter's public counter API
-st.markdown("""
+# Visitor Counter - Using GoatCounter's SVG badge (CORS-free, reliable)
+st.markdown(f"""
     <div class="visitor-counter">
         <div class="counter-label">👥 Total Visitors</div>
-        <div class="counter-number" id="visitor-count">Loading...</div>
+        <div style="display: flex; justify-content: center; margin: 1rem 0;">
+            <img src="https://phoenix583.goatcounter.com/counter//total.svg?nocache={int(time.time())}" 
+                 style="height: 70px; filter: invert(47%) sepia(87%) saturate(345%) hue-rotate(190deg) brightness(95%) contrast(92%);" 
+                 alt="Visitor Count">
+        </div>
         <div class="counter-description">Aerospace enthusiasts analyzing airfoils worldwide</div>
     </div>
-    
-    <script>
-        // Fetch visitor count from GoatCounter's public counter endpoint
-        // Note: This updates every 30 minutes (cached)
-        fetch('https://phoenix583.goatcounter.com/counter//total.json')
-            .then(response => response.json())
-            .then(data => {
-                // GoatCounter returns {count: number, count_unique: number}
-                const count = data.count || 0;
-                document.getElementById('visitor-count').textContent = count.toLocaleString();
-            })
-            .catch(error => {
-                console.error('Error fetching visitor count:', error);
-                // Fallback: Try alternative endpoint
-                fetch('https://phoenix583.goatcounter.com/counter.json')
-                    .then(response => response.json())
-                    .then(data => {
-                        const count = data.count || 0;
-                        document.getElementById('visitor-count').textContent = count.toLocaleString();
-                    })
-                    .catch(() => {
-                        document.getElementById('visitor-count').textContent = '---';
-                    });
-            });
-    </script>
 """, unsafe_allow_html=True)
 
 st.markdown("<br>", unsafe_allow_html=True)
@@ -196,14 +186,10 @@ with step_col3:
     st.markdown("#### 3️⃣ Analyze")
     st.markdown("Get lift, drag, moment coefficients, and detailed pressure distributions")
 
-# Footer with GoatCounter tracking (invisible)
+# Footer (GoatCounter tracking already loaded at top)
 st.markdown("""
     <div class="footer">
         <p>Built with Streamlit • Powered by XFOIL • For Educational Use</p>
         <p style="font-size: 0.9rem;">AeroLab © 2026 • Advancing Aerospace Education</p>
     </div>
-    
-    <!-- GoatCounter Analytics (tracks pageviews invisibly) -->
-    <script data-goatcounter="https://phoenix583.goatcounter.com/count"
-            async src="//gc.zgo.at/count.js"></script>
 """, unsafe_allow_html=True)
