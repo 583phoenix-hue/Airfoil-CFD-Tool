@@ -177,7 +177,7 @@ uploaded_file = st.file_uploader(
 run_analysis = st.button("🚀 Run Analysis", type="primary", disabled=(uploaded_file is None))
 
 if uploaded_file is not None and run_analysis:
-    backend_url = os.getenv("BACKEND_URL", "http://127.0.0.1:8000")
+    backend_url = os.getenv("BACKEND_URL", "https://aerolab-backend.onrender.com")
     
     if 'analyzing' in st.session_state and st.session_state.analyzing:
         st.warning("⏳ Analysis already in progress. Please wait...")

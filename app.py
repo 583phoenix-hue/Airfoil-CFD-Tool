@@ -88,10 +88,10 @@ col1, col2, col3 = st.columns([1, 1, 1])
 
 with col2:
     if st.button("🚀 Analyze Airfoil", key="analyze", use_container_width=True, type="primary"):
-        st.switch_page("pages/1_Airfoil_Analysis.py")
+        st.switch_page("pages/Airfoil_Analysis.py")
     
     if st.button("📖 About AeroLab", key="about", use_container_width=True):
-        st.switch_page("pages/2_About.py")
+        st.switch_page("pages/About.py")
 
 st.markdown("<br><br>", unsafe_allow_html=True)
 
