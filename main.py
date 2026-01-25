@@ -156,7 +156,6 @@ def extract_aerodynamic_coefficients(stdout: str):
         'CL': r'CL\s*=\s*([-+]?\d*\.?\d+)',
         'CD': r'CD\s*=\s*([-+]?\d*\.?\d+)',
         'CDp': r'CDp\s*=\s*([-+]?\d*\.?\d+)',
-        'CM': r'CM\s*=\s*([-+]?\d*\.?\d+)',
     }
     for key, pattern in patterns.items():
         match = re.search(pattern, stdout)

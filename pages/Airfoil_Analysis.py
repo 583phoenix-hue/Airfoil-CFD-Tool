@@ -253,9 +253,11 @@ if st.session_state.results is not None:
         metrics = [
             ("CL", "CL"),
             ("CD", "CD"),
-            ("CM", "CM"),
             ("L/D", None)
         ]
+        
+        # Change from 4 columns to 3 columns
+        coef_cols = st.columns(3)
         
         for idx, (label, key) in enumerate(metrics):
             with coef_cols[idx]:

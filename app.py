@@ -50,24 +50,38 @@ st.markdown("""
         font-size: 1rem;
         opacity: 0.9;
     }
-    .cta-button {
-        display: inline-block;
-        padding: 1rem 3rem;
-        font-size: 1.3rem;
-        font-weight: bold;
-        color: white;
-        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-        border-radius: 50px;
-        text-decoration: none;
-        box-shadow: 0 10px 30px rgba(102, 126, 234, 0.4);
-        transition: transform 0.3s;
-        margin: 0.5rem;
-    }
     .footer {
         text-align: center;
         color: #999;
         margin-top: 5rem;
         padding: 2rem;
+    }
+    .visitor-counter {
+        text-align: center;
+        margin: 2rem 0;
+        padding: 2rem;
+        background: linear-gradient(135deg, #667eea15 0%, #764ba215 100%);
+        border-radius: 20px;
+        border: 2px solid #667eea30;
+    }
+    .counter-label {
+        font-size: 1.2rem;
+        color: #666;
+        margin-bottom: 0.5rem;
+        font-weight: 500;
+    }
+    .counter-number {
+        font-size: 3.5rem;
+        font-weight: bold;
+        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        -webkit-background-clip: text;
+        -webkit-text-fill-color: transparent;
+        margin: 0.5rem 0;
+    }
+    .counter-description {
+        font-size: 0.9rem;
+        color: #999;
+        margin-top: 0.5rem;
     }
     </style>
 """, unsafe_allow_html=True)
@@ -94,6 +108,42 @@ with col2:
         st.switch_page("pages/About.py")
 
 st.markdown("<br><br>", unsafe_allow_html=True)
+
+# Visitor Counter - Using GoatCounter's public counter API
+st.markdown("""
+    <div class="visitor-counter">
+        <div class="counter-label">👥 Total Visitors</div>
+        <div class="counter-number" id="visitor-count">Loading...</div>
+        <div class="counter-description">Aerospace enthusiasts analyzing airfoils worldwide</div>
+    </div>
+    
+    <script>
+        // Fetch visitor count from GoatCounter's public counter endpoint
+        // Note: This updates every 30 minutes (cached)
+        fetch('https://phoenix583.goatcounter.com/counter//total.json')
+            .then(response => response.json())
+            .then(data => {
+                // GoatCounter returns {count: number, count_unique: number}
+                const count = data.count || 0;
+                document.getElementById('visitor-count').textContent = count.toLocaleString();
+            })
+            .catch(error => {
+                console.error('Error fetching visitor count:', error);
+                // Fallback: Try alternative endpoint
+                fetch('https://phoenix583.goatcounter.com/counter.json')
+                    .then(response => response.json())
+                    .then(data => {
+                        const count = data.count || 0;
+                        document.getElementById('visitor-count').textContent = count.toLocaleString();
+                    })
+                    .catch(() => {
+                        document.getElementById('visitor-count').textContent = '---';
+                    });
+            });
+    </script>
+""", unsafe_allow_html=True)
+
+st.markdown("<br>", unsafe_allow_html=True)
 
 # Features Section
 st.markdown("### ⚡ Features")
@@ -146,13 +196,14 @@ with step_col3:
     st.markdown("#### 3️⃣ Analyze")
     st.markdown("Get lift, drag, moment coefficients, and detailed pressure distributions")
 
-# Footer with visitor counter
+# Footer with GoatCounter tracking (invisible)
 st.markdown("""
     <div class="footer">
-        <div style="font-size: 2.5rem; font-weight: bold; color: #667eea; margin-bottom: 1rem;">
-            <img src="https://hits.seeyoufarm.com/api/count/incr/badge.svg?url=https%3A%2F%2Faerolab.onrender.com&count_bg=%23667EEA&title_bg=%23555555&icon=airplanemode_active&icon_color=%23FFFFFF&title=Total+Visits&edge_flat=false&style=for-the-badge" alt="Visitor Counter" style="height: 50px;"/>
-        </div>
         <p>Built with Streamlit • Powered by XFOIL • For Educational Use</p>
         <p style="font-size: 0.9rem;">AeroLab © 2026 • Advancing Aerospace Education</p>
     </div>
+    
+    <!-- GoatCounter Analytics (tracks pageviews invisibly) -->
+    <script data-goatcounter="https://phoenix583.goatcounter.com/count"
+            async src="//gc.zgo.at/count.js"></script>
 """, unsafe_allow_html=True)
