@@ -236,6 +236,20 @@ if st.session_state.results is not None:
         coef_cols = st.columns(4)
         coeffs = result["coefficients"]
         
+        # Check for warnings
+        if "CL" in coeffs:
+            # Negative lift warning
+            if coeffs["CL"] < -0.1:
+                st.warning("⚠️ **Negative Lift Detected!** The airfoil is generating downforce. This occurs when flying inverted or at very negative angles of attack.")
+            
+            # Very low/zero lift
+            elif abs(coeffs["CL"]) < 0.001:
+                st.info("ℹ️ **Near-Zero Lift:** Symmetric airfoil at zero angle of attack produces minimal lift. L/D ratio is not meaningful.")
+            
+            # Potential stall warning (very low CL with high alpha)
+            elif coeffs["CL"] < 0.5 and abs(last_params['alpha']) > 10:
+                st.error("🚨 **Possible Stall Condition!** Low lift coefficient at high angle of attack suggests flow separation. The airfoil may be stalled.")
+        
         metrics = [
             ("CL", "CL"),
             ("CD", "CD"),
@@ -248,11 +262,18 @@ if st.session_state.results is not None:
                 if key and key in coeffs:
                     st.metric(label, f"{coeffs[key]:.4f}")
                 elif label == "L/D" and "CL" in coeffs and "CD" in coeffs:
-                    if coeffs["CD"] != 0:
-                        ld_ratio = coeffs["CL"] / coeffs["CD"]
-                        st.metric(label, f"{ld_ratio:.2f}")
+                    # Only show L/D if CL is meaningful
+                    if abs(coeffs["CL"]) < 0.001 or coeffs["CD"] == 0:
+                        st.metric(label, "~0", help="CL ≈ 0, L/D not meaningful")
                     else:
-                        st.metric(label, "N/A")
+                        ld_ratio = coeffs["CL"] / coeffs["CD"]
+                        # Color code based on value
+                        if ld_ratio < 0:
+                            st.metric(label, f"{ld_ratio:.2f}", help="Negative L/D indicates negative lift (downforce)")
+                        else:
+                            st.metric(label, f"{ld_ratio:.2f}")
+                else:
+                    st.metric(label, "N/A")
     
     coords_before = pd.DataFrame(result["coords_before"], columns=["x", "y"])
     coords_after = pd.DataFrame(result["coords_after"], columns=["x", "y"])

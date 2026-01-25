@@ -88,10 +88,10 @@ col1, col2, col3 = st.columns([1, 1, 1])
 
 with col2:
     if st.button("🚀 Analyze Airfoil", key="analyze", use_container_width=True, type="primary"):
-        st.switch_page("pages/Airfoil_Analysis.py")
+        st.switch_page("pages/1_Airfoil_Analysis.py")
     
     if st.button("📖 About AeroLab", key="about", use_container_width=True):
-        st.switch_page("pages/About.py")
+        st.switch_page("pages/2_About.py")
 
 st.markdown("<br><br>", unsafe_allow_html=True)
 
@@ -146,9 +146,12 @@ with step_col3:
     st.markdown("#### 3️⃣ Analyze")
     st.markdown("Get lift, drag, moment coefficients, and detailed pressure distributions")
 
-# Footer
+# Footer with visitor counter
 st.markdown("""
     <div class="footer">
+        <div style="font-size: 2.5rem; font-weight: bold; color: #667eea; margin-bottom: 1rem;">
+            <img src="https://hits.seeyoufarm.com/api/count/incr/badge.svg?url=https%3A%2F%2Faerolab.onrender.com&count_bg=%23667EEA&title_bg=%23555555&icon=airplanemode_active&icon_color=%23FFFFFF&title=Total+Visits&edge_flat=false&style=for-the-badge" alt="Visitor Counter" style="height: 50px;"/>
+        </div>
         <p>Built with Streamlit • Powered by XFOIL • For Educational Use</p>
         <p style="font-size: 0.9rem;">AeroLab © 2026 • Advancing Aerospace Education</p>
     </div>
