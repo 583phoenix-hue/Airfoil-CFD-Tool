@@ -1,4 +1,5 @@
 import streamlit as st
+import streamlit.components.v1 as components
 from db_utils import init_db, get_analysis_count
 
 # Page configuration
