@@ -12,6 +12,16 @@ st.set_page_config(
 # Initialize database on app startup
 init_db()
 
+# Google Search Console Verification + SEO Meta Tags
+components.html(
+    """
+    <meta name="google-site-verification" content="1hFr-qeLMHx9cQeuCHjuGEIPih3uLpk1HBXuro1u9as" />
+    <meta name="description" content="Free online airfoil analysis tool powered by XFOIL. Analyze lift, drag, and pressure distribution for aircraft wings. Perfect for students, engineers, and aerospace enthusiasts.">
+    <meta name="keywords" content="airfoil analysis, XFOIL, aerodynamics, CFD, aircraft design, lift drag analysis, aerospace engineering, free airfoil tool, aerolab">
+    """,
+    height=0,
+)
+
 # Custom CSS
 st.markdown("""
     <style>
