@@ -241,13 +241,21 @@ def _run_xfoil_mode(coords_filename: str, cp_filename: str, work_dir: str, reyno
     
     if viscous:
         script_lines.extend([
-            f"VISC {reynolds}",
-            "ITER 200",
+            f"VISC {reynolds:.0f}",  # Enable viscous mode FIRST
+            "VPAR",                   # Enter Viscous Parameters menu
+            "XTR",                    # Set transition location
+            "0.05",                   # Upper surface trip at 5% chord
+            "0.05",                   # Lower surface trip at 5% chord  
+            "N",                      # Set N-critical (turbulence parameter)
+            "9",                      # Standard atmospheric value
+            "",                       # Exit VPAR back to OPER
+            "ITER 150",               # Iteration limit
+            "INIT",                   # Initialize boundary layer with new settings
+            f"ALFA {alpha}",          # NOW solve viscous at this alpha
         ])
     
-    # Run analysis
+    # Write output
     script_lines.extend([
-        f"ALFA {alpha}",
         f"CPWR {cp_filename}",
         "",
         "QUIT"
