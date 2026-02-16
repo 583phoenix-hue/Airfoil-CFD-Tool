@@ -212,61 +212,53 @@ def _run_xfoil_mode(coords_filename: str, cp_filename: str, work_dir: str, reyno
             except:
                 pass
     
-    # === BUILD SCRIPT (LINUX-OPTIMIZED) ===
+    # === BUILD SCRIPT (LINUX-OPTIMIZED WITH CORRECT PPAR SYNTAX) ===
     script_lines = []
     
-    # Load airfoil - NO PLOP on Linux!
+    # Load airfoil
     script_lines.extend([
         f"LOAD {coords_filename}",
-        "",
+        "",  # Confirm load
     ])
     
-    # PPAR - minimal blanks on Linux
+    # PPAR - CRITICAL: N and 280 must be on SEPARATE lines!
     script_lines.extend([
-        "PPAR",
-        "N",
-        "280",
-        "",
-        "T",
-        "1",
-        "",
-        "",
+        "PPAR",      # Enter PPAR menu
+        "N",         # Select N parameter (NUMBER of panels)
+        "280",       # Value: 280 panels
+        "",          # Confirm value
+        "T",         # Select T parameter (TYPE of spacing)
+        "1",         # Value: 1 (cosine spacing)
+        "",          # Confirm value
+        "",          # Exit PPAR back to main menu
     ])
     
-    # Geometry
+    # Geometry design
     script_lines.extend([
-        "GDES",
-        "CADD",
-        "",
-        "X",
-        "",
+        "GDES",      # Enter GDES menu
+        "CADD",      # Add curvature-adaptive points
+        "",          # Exit CADD
+        "",          # Exit GDES back to main menu
     ])
     
-    # Re-panel
+    # Re-panel and operate
     script_lines.extend([
-        "PANE",
-        "",
-    ])
-    
-    # Operating mode
-    script_lines.extend([
-        "OPER",
+        "PANE",      # Re-panel geometry with N=280, T=1
+        "OPER",      # Enter operating menu
     ])
     
     if viscous:
         script_lines.extend([
-            f"VISC {reynolds}",
-            "ITER 200",
+            f"VISC {reynolds}",  # Enable viscous mode
+            "ITER 200",          # Set iteration limit
         ])
     
-    # Analysis
+    # Run analysis
     script_lines.extend([
-        f"ALFA {alpha}",
-        "",
-        f"CPWR {cp_filename}",
-        "",
-        "QUIT",
-        ""
+        f"ALFA {alpha}",         # Set angle of attack
+        f"CPWR {cp_filename}",   # Write pressure coefficient
+        "",                      # Confirm if prompted
+        "QUIT"                   # Exit XFOIL
     ])
     
     # Write script with Unix line endings
