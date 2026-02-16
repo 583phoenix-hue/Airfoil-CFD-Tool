@@ -212,7 +212,7 @@ def _run_xfoil_mode(coords_filename: str, cp_filename: str, work_dir: str, reyno
             except:
                 pass
     
-    # === BUILD SCRIPT (LINUX-OPTIMIZED WITH CORRECT PPAR SYNTAX) ===
+    # === BUILD SCRIPT (LINUX-OPTIMIZED - NO GDES) ===
     script_lines = []
     
     # Load airfoil
@@ -221,44 +221,36 @@ def _run_xfoil_mode(coords_filename: str, cp_filename: str, work_dir: str, reyno
         "",  # Confirm load
     ])
     
-    # PPAR - CRITICAL: N and 280 must be on SEPARATE lines!
+    # PPAR - Set 280 panels with cosine spacing (this is enough!)
     script_lines.extend([
         "PPAR",      # Enter PPAR menu
-        "N",         # Select N parameter (NUMBER of panels)
-        "280",       # Value: 280 panels
-        "",          # Confirm value
-        "T",         # Select T parameter (TYPE of spacing)
-        "1",         # Value: 1 (cosine spacing)
-        "",          # Confirm value
-        "",          # Exit PPAR back to main menu
+        "N",         # Select N parameter
+        "280",       # 280 panels
+        "",          # Confirm
+        "T",         # Select T parameter
+        "1",         # Cosine spacing
+        "",          # Confirm
+        "",          # Exit PPAR
     ])
     
-    # Geometry design
+    # Re-panel and operate (skip GDES entirely)
     script_lines.extend([
-        "GDES",      # Enter GDES menu
-        "CADD",      # Add curvature-adaptive points
-        "",          # Exit CADD
-        "",          # Exit GDES back to main menu
-    ])
-    
-    # Re-panel and operate
-    script_lines.extend([
-        "PANE",      # Re-panel geometry with N=280, T=1
+        "PANE",      # Re-panel with N=280, T=1
         "OPER",      # Enter operating menu
     ])
     
     if viscous:
         script_lines.extend([
-            f"VISC {reynolds}",  # Enable viscous mode
-            "ITER 200",          # Set iteration limit
+            f"VISC {reynolds}",
+            "ITER 200",
         ])
     
     # Run analysis
     script_lines.extend([
-        f"ALFA {alpha}",         # Set angle of attack
-        f"CPWR {cp_filename}",   # Write pressure coefficient
-        "",                      # Confirm if prompted
-        "QUIT"                   # Exit XFOIL
+        f"ALFA {alpha}",
+        f"CPWR {cp_filename}",
+        "",
+        "QUIT"
     ])
     
     # Write script with Unix line endings
