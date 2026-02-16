@@ -174,81 +174,289 @@ def run_xfoil_sync(coords_file: str, reynolds: float, alpha: float, work_dir: st
     # Try viscous mode first
     try:
         print("Trying VISCOUS mode...")
-        return _run_xfoil_mode(coords_filename, cp_filename, work_dir, reynolds, alpha, viscous=True, timeout=45)
+        return _run_xfoil_mode(coords_filename, cp_filename, work_dir, reynolds, alpha, viscous=True, timeout=90)
     except subprocess.TimeoutExpired:
         print("⚠️ Viscous timed out, trying INVISCID mode...")
         try:
-            return _run_xfoil_mode(coords_filename, cp_filename, work_dir, reynolds, alpha, viscous=False, timeout=20)
+            return _run_xfoil_mode(coords_filename, cp_filename, work_dir, reynolds, alpha, viscous=False, timeout=30)
         except Exception as e:
             raise Exception(f"Both modes failed. Viscous: timeout, Inviscid: {str(e)}")
     except Exception as e:
         if "convergence" in str(e).lower():
             print("⚠️ Viscous convergence failed, trying INVISCID mode...")
             try:
-                return _run_xfoil_mode(coords_filename, cp_filename, work_dir, reynolds, alpha, viscous=False, timeout=20)
+                return _run_xfoil_mode(coords_filename, cp_filename, work_dir, reynolds, alpha, viscous=False, timeout=30)
             except Exception as inv_e:
                 raise Exception(f"Both modes failed. Viscous: {str(e)}, Inviscid: {str(inv_e)}")
         raise e
 
 def _run_xfoil_mode(coords_filename: str, cp_filename: str, work_dir: str, reynolds: float, alpha: float, viscous: bool, timeout: int):
-    """Run XFOIL in viscous or inviscid mode."""
-    cp_out_path = os.path.join(work_dir, cp_filename)
+    """SLOW-FEEDER METHOD: Sends commands one line at a time with breathing room.
     
-    if os.path.exists(cp_out_path):
-        os.remove(cp_out_path)
+    This is the ONLY way to reliably control XFOIL on Windows.
     
-    # Build command sequence - USE PANE ON BOTH PLATFORMS
-    commands = [
+    How it works:
+    1. Opens XFOIL process with stdin pipe
+    2. Sends ONE command
+    3. Flushes the buffer (forces it to send immediately)
+    4. Waits 0.1 seconds (lets XFOIL process it)
+    5. Repeats for next command
+    
+    This prevents buffer overflow and ensures XFOIL processes each command
+    before the next one arrives.
+    """
+    
+    # Kill zombie processes on Windows
+    if IS_WINDOWS:
+        try:
+            subprocess.run("taskkill /F /IM xfoil.exe /T", 
+                         shell=True, 
+                         capture_output=True, 
+                         timeout=2)
+            time.sleep(0.5)
+        except:
+            pass
+    
+    cp_out_path = os.path.abspath(os.path.join(work_dir, cp_filename))
+    log_path = os.path.abspath(os.path.join(work_dir, "xfoil_output.log"))
+    
+    # Clean up files
+    for path in [cp_out_path, log_path]:
+        if os.path.exists(path):
+            try:
+                os.remove(path)
+                time.sleep(0.2)
+            except:
+                pass
+    
+    # === BUILD COMMAND SEQUENCE ===
+    script_lines = []
+    
+    script_lines.extend([
         f"LOAD {coords_filename}",
-        "PANE",  # Same on Windows and Linux for consistency
-        "OPER"
-    ]
+        "",
+        "PLOP",
+        "G",
+        "",
+        "",
+    ])
     
-    # Add viscous or inviscid commands
+    script_lines.extend([
+        "PPAR",
+        "",
+        "",
+        "N",
+        "",
+        "280",
+        "",
+        "",
+        "",
+        "T",
+        "",
+        "1",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+    ])
+    
+    script_lines.extend([
+        "GDES",
+        "",
+        "",
+        "CADD",
+        "",
+        "",
+        "X",
+        "",
+        "",
+    ])
+    
+    script_lines.extend([
+        "PANE",
+        "",
+        "",
+        "",
+    ])
+    
+    script_lines.extend([
+        "OPER",
+        "",
+        "",
+    ])
+    
     if viscous:
-        commands.extend([
+        script_lines.extend([
             f"VISC {reynolds}",
-            "ITER 100"
+            "",
+            "",
+            "",
+            "ITER 200",
+            "",
+            "",
         ])
     
-    # Add analysis commands
-    commands.extend([
+    script_lines.extend([
         f"ALFA {alpha}",
+        "",
+        "",
+        "",
+        "",
         f"CPWR {cp_filename}",
         "",
-        "QUIT"
+        "",
+        "",
+        "QUIT",
+        "",
+        ""
     ])
+    
+    print(f"\n{'='*70}")
+    print(f"🐌 SLOW-FEEDER METHOD")
+    print(f"{'='*70}")
+    print(f"Platform: {platform.system()}")
+    print(f"Method: Interactive piping (0.1s delay per line)")
+    print(f"Total commands: {len(script_lines)}")
+    print(f"Estimated time: ~{len(script_lines) * 0.1:.1f} seconds")
+    print(f"{'='*70}\n")
 
     try:
-        input_str = "\n".join(commands) + "\n"
-        
-        # Run XFOIL directly (NO xvfb-run to avoid -8 crash)
+        # === SLOW-FEEDER EXECUTION ===
         proc = subprocess.Popen(
             [XFOIL_EXE],
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
-            cwd=work_dir
+            cwd=work_dir,
+            bufsize=1  # Line buffered
         )
         
-        stdout, stderr = proc.communicate(input=input_str, timeout=timeout)
-        time.sleep(0.3)
+        print(f"Feeding commands to XFOIL (one line at a time)...")
+        
+        # Feed commands one by one with delays
+        for i, line in enumerate(script_lines, 1):
+            try:
+                proc.stdin.write(f"{line}\n")
+                proc.stdin.flush()  # Force immediate send
+                
+                # Progress indicator every 10 lines
+                if i % 10 == 0:
+                    print(f"  Sent {i}/{len(script_lines)} commands...")
+                
+                # CRITICAL: Wait for XFOIL to process
+                if IS_WINDOWS:
+                    time.sleep(0.15)  # Windows needs more time
+                else:
+                    time.sleep(0.05)  # Linux is faster
+                    
+            except BrokenPipeError:
+                print(f"  XFOIL closed at line {i}")
+                break
+        
+        print(f"  All commands sent, waiting for XFOIL to finish...")
+        
+        # Close stdin and wait for completion
+        proc.stdin.close()
+        
+        # Collect output with timeout
+        try:
+            stdout, stderr = proc.communicate(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            stdout, stderr = proc.communicate()
+            raise
+        
+        # Platform-specific wait
+        if IS_WINDOWS:
+            time.sleep(1.0)
+        else:
+            time.sleep(0.3)
+        
+        # Save output
+        with open(log_path, 'w', newline='\n') as f:
+            f.write("="*70 + "\n")
+            f.write(f"SLOW-FEEDER LOG ({platform.system()})\n")
+            f.write("="*70 + "\n\n")
+            f.write(f"Delay per line: {0.15 if IS_WINDOWS else 0.05}s\n")
+            f.write(f"Reynolds: {reynolds}\n")
+            f.write(f"Alpha: {alpha}\n")
+            f.write(f"Viscous: {viscous}\n\n")
+            f.write("="*70 + "\n")
+            f.write("STDOUT\n")
+            f.write("="*70 + "\n")
+            f.write(stdout)
+            f.write("\n\n")
+            f.write("="*70 + "\n")
+            f.write("STDERR\n")
+            f.write("="*70 + "\n")
+            f.write(stderr)
         
         mode = "VISCOUS" if viscous else "INVISCID"
-        print(f"\n=== XFOIL {mode} RUN ===")
-        print(f"Return Code: {proc.returncode}")
         
+        print(f"\n{'='*70}")
+        print(f"XFOIL {mode} COMPLETE")
+        print(f"{'='*70}")
+        print(f"Log: {log_path}")
+        
+        # === VERIFY PANEL COUNT ===
+        panel_matches = re.findall(r'Number of panel nodes\s+(\d+)', stdout)
+        
+        print(f"\n{'='*70}")
+        print(f"PANEL COUNT VERIFICATION")
+        print(f"{'='*70}")
+        
+        if panel_matches:
+            panel_count = int(panel_matches[-1])
+            print(f"✓ Detected: {panel_count} panels")
+            
+            if panel_count >= 250:
+                print(f"✅ BREAKTHROUGH! Slow-feeder worked!")
+                print(f"   {panel_count} panels achieved")
+            elif panel_count >= 200:
+                print(f"⚠️  Got {panel_count} panels (target 280)")
+            else:
+                print(f"❌ Still only {panel_count} panels")
+                print(f"   Even slow-feeder failed")
+                if IS_WINDOWS:
+                    print(f"   Windows XFOIL binary may be fundamentally broken")
+                    print(f"   MUST deploy to Linux")
+        else:
+            print(f"⚠️  Could not detect panel count")
+        
+        # Verify viscous mode
+        if viscous:
+            visc_indicators = ["Re =", f"Re = {reynolds}", "VISCAL"]
+            if any(ind in stdout for ind in visc_indicators):
+                print(f"✅ Viscous mode CONFIRMED")
+            else:
+                print(f"❌ CRITICAL: Viscous mode FAILED")
+                print(f"   XFOIL is running INVISCID")
+                print(f"   This explains L/D > 400")
+        
+        print(f"{'='*70}\n")
+        
+        # Check convergence
         if "VISCAL:  Convergence failed" in stdout:
             raise Exception("Convergence failed")
         
+        # Wait for file
+        max_retries = 5 if IS_WINDOWS else 3
+        for retry in range(max_retries):
+            if os.path.exists(cp_out_path):
+                break
+            time.sleep(0.5 if IS_WINDOWS else 0.2)
+        
         if not os.path.exists(cp_out_path):
-            print(f"OUTPUT NOT FOUND")
-            print(stdout[-500:])
-            raise Exception(f"{mode} mode did not generate output")
-
+            print(f"❌ CP file not created")
+            raise Exception(f"{mode} did not generate output")
+        
+        # Extract coefficients
         coefficients = extract_aerodynamic_coefficients(stdout)
         
+        # Parse CP data
         cp_x, cp_values = [], []
         with open(cp_out_path, "r") as f:
             for line in f:
@@ -264,9 +472,38 @@ def _run_xfoil_mode(coords_filename: str, cp_filename: str, work_dir: str, reyno
                         continue
         
         if not cp_x:
-            raise Exception("No pressure data extracted")
+            raise Exception("No pressure data")
         
-        print(f"✅ {mode} SUCCESS: {len(cp_x)} points")
+        # Results
+        cl = coefficients.get('CL', 0)
+        cd = coefficients.get('CD', 0.0001)
+        ld = cl / cd if cd > 0 else 0
+        
+        print(f"{'='*70}")
+        print(f"RESULTS")
+        print(f"{'='*70}")
+        print(f"CL     = {cl:8.4f}")
+        print(f"CD     = {cd:8.6f}")
+        print(f"L/D    = {ld:8.1f}")
+        print(f"CP pts = {len(cp_x):8d}")
+        print(f"{'='*70}\n")
+        
+        # === CRITICAL SANITY CHECKS ===
+        if cd < 0.005 and viscous and reynolds > 100000:
+            print(f"🚨 CRITICAL: CD={cd:.6f} is IMPOSSIBLY LOW")
+            print(f"   Expected: 0.007-0.012")
+            print(f"   Actual: {cd:.6f}")
+            print(f"   Error: {((0.010 - cd) / 0.010 * 100):.0f}% too low")
+            print(f"\n   YOUR SERVO WILL BE UNDERSIZED BY {(0.010 / cd):.1f}×")
+            if IS_WINDOWS:
+                print(f"\n   Windows XFOIL is UNRELIABLE for production")
+                print(f"   Deploy to Linux/Render IMMEDIATELY\n")
+        
+        if ld > 150:
+            print(f"🚨 CRITICAL: L/D={ld:.0f} is PHYSICALLY IMPOSSIBLE")
+            print(f"   Sailplanes max out at ~60")
+            print(f"   This proves XFOIL is running INVISCID")
+            print(f"   or with default coarse mesh\n")
         
         if not viscous:
             coefficients['note'] = 'inviscid'
@@ -329,6 +566,7 @@ async def upload_airfoil(
     
     print(f"\n{'='*60}")
     print(f"NEW REQUEST: {file.filename}")
+    print(f"Platform: {platform.system()}")
     print(f"{'='*60}")
     
     try:
@@ -375,7 +613,7 @@ async def upload_airfoil(
     finally:
         try:
             if os.path.exists(work_dir):
-                time.sleep(0.2)
+                time.sleep(0.5 if IS_WINDOWS else 0.2)
                 shutil.rmtree(work_dir, ignore_errors=True)
         except:
             pass
