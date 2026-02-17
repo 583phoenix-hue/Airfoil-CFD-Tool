@@ -245,36 +245,36 @@ def _run_xfoil_mode(coords_filename: str, cp_filename: str, work_dir: str, reyno
             except Exception:
                 pass
 
-    # === BUILD SCRIPT (ROBUST VISCOUS) ===
+    # === BUILD SCRIPT (ROBUST VISCOUS - NO MENU HELL) ===
     script_lines = []
     
     # Load airfoil
     script_lines.append(f"LOAD {coords_filename}")
     
     # Optional geometry smoothing for noisy coordinate files
-    # CAUTION: This changes the airfoil slightly, only use when necessary
     if smooth_geometry:
         script_lines.extend([
-            "GDES",      # Enter geometry design
-            "FILT",      # Apply smoothing filter
-            "EXEC",      # Execute changes
-            "",          # Return to top level
+            "GDES",
+            "FILT",
+            "EXEC",
+            "",
         ])
         print("    [Applying geometry smoothing filter]")
     
-    # Set panel density - CRITICAL for viscous convergence
+    # Panel first with default settings (creates ~160 panels)
+    script_lines.append("PANE")
+    
+    # Add more panels using CADD (no menu navigation needed!)
+    # CADD adds panels at high-curvature areas (LE, TE)
     script_lines.extend([
-        "PPAR",
-        "N",         # Select N parameter
-        "280",       # Set value to 280
-        "",          # Blank to exit PPAR
+        "PCOP",      # Copy current paneling to buffer
+        "CADD",      # Add panels at high curvature (~220)
+        "CADD",      # Do it again (~280)
+        "PANE",      # Re-panel to accept buffer as working geometry
     ])
     
-    # Panel and enter OPER
-    script_lines.extend([
-        "PANE",
-        "OPER",
-    ])
+    # Enter OPER mode
+    script_lines.append("OPER")
     
     if viscous:
         # Robust viscous initialization: solve at alpha=0 first, then target alpha

@@ -191,7 +191,7 @@ with dev_col2:
         accessible to students and educators worldwide.
         </p>
         <p style="font-size: 1.05rem; margin-top: 1rem; text-align: center;">
-        <strong>Specializations:</strong><br>
+        <strong>Interests:</strong><br>
         Aerodynamics • CFD • CAD • Research
         </p>
     </div>
