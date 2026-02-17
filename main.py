@@ -253,72 +253,30 @@ def _run_xfoil_mode(coords_filename: str, cp_filename: str, work_dir: str, reyno
             except Exception:
                 pass
 
-    # === BUILD SCRIPT (SIMPLE AND RELIABLE) ===
+    # === BUILD SCRIPT ===
     script_lines = []
-    
-    # Load airfoil
-    script_lines.append(f"LOAD {coords_filename}")
-    
-    # Optional geometry smoothing for noisy coordinate files
-    if smooth_geometry:
-        script_lines.extend([
-            "GDES",
-            "FILT",
-            "",      # Exit FILT
-            "",      # Exit GDES
-        ])
-        print("    [Applying geometry smoothing filter]")
-    
-    # Simple approach: Just use default PANE (160 panels is sufficient)
-    script_lines.append("PANE")
-    
-    # Set Ncrit at TOP LEVEL before entering OPER
-    # This avoids the double-blank exit bug that kicks us out of OPER
-    if viscous:
-        script_lines.extend([
-            "VPAR",   # VPAR exists at top level too
-            "N",
-            "9",
-            "",       # One blank exits VPAR back to top level (not OPER)
-        ])
-    
-    # Enter OPER mode
-    script_lines.append("OPER")
-    
+
+    # Load and panel airfoil
+    script_lines.extend([
+        f"LOAD {coords_filename}",
+        "PANE",
+        "OPER",
+    ])
+
     if viscous:
         script_lines.extend([
             f"VISC {reynolds}",
             "ITER 500",
+            f"ALFA {alpha}",
         ])
-        
-        # Step-wise approach with INIT before each angle
-        if abs(alpha) > 2:
-            # For larger angles, step through intermediate values
-            script_lines.extend([
-                "INIT",              # Initialize boundary layer
-                "ALFA 0",            # Start at zero
-                "INIT",              # Re-initialize
-                f"ALFA {alpha/2:.2f}",  # Go halfway
-                "INIT",              # Re-initialize
-                f"ALFA {alpha}",     # Then target
-            ])
-        else:
-            # For small angles
-            script_lines.extend([
-                "INIT",
-                "ALFA 0",
-                "INIT",
-                f"ALFA {alpha}",
-            ])
     else:
-        # Inviscid mode
         script_lines.append(f"ALFA {alpha}")
-    
-    # Output and quit
+
+    # Write CP and quit
     script_lines.extend([
         f"CPWR {cp_filename}",
         "",
-        "QUIT"
+        "QUIT",
     ])
 
     # Write script with Unix line endings
