@@ -164,33 +164,65 @@ def extract_aerodynamic_coefficients(stdout: str):
     return coefficients
 
 def run_xfoil_sync(coords_file: str, reynolds: float, alpha: float, work_dir: str):
-    """Run XFOIL simulation with fallback to inviscid if viscous fails."""
+    """Run XFOIL simulation with intelligent retry strategy."""
     coords_filename = "airfoil.dat"
     cp_filename = "cp_output.txt"
 
     work_coords = os.path.join(work_dir, coords_filename)
     shutil.copy(coords_file, work_coords)
 
-    # Try viscous mode first
+    # Strategy 1: Try viscous mode with clean geometry
     try:
-        print("Trying VISCOUS mode...")
-        return _run_xfoil_mode(coords_filename, cp_filename, work_dir, reynolds, alpha, viscous=True, timeout=60)
+        print("Attempt 1: VISCOUS mode with stepped initialization...")
+        return _run_xfoil_mode(coords_filename, cp_filename, work_dir, reynolds, alpha, 
+                               viscous=True, timeout=90, smooth_geometry=False)
     except subprocess.TimeoutExpired:
-        print("Warning: Viscous timed out, trying INVISCID mode...")
-        try:
-            return _run_xfoil_mode(coords_filename, cp_filename, work_dir, reynolds, alpha, viscous=False, timeout=20)
-        except Exception as e:
-            raise Exception(f"Both modes failed. Viscous: timeout, Inviscid: {str(e)}")
+        print("ERROR: Viscous mode timed out after 90s")
+        pass  # Fall through to strategy 2
     except Exception as e:
-        if "convergence" in str(e).lower():
-            print("Warning: Viscous convergence failed, trying INVISCID mode...")
-            try:
-                return _run_xfoil_mode(coords_filename, cp_filename, work_dir, reynolds, alpha, viscous=False, timeout=20)
-            except Exception as inv_e:
-                raise Exception(f"Both modes failed. Viscous: {str(e)}, Inviscid: {str(inv_e)}")
-        raise e
+        error_msg = str(e).lower()
+        if "convergence" in error_msg or "no pressure data" in error_msg:
+            print(f"Convergence issue detected: {str(e)}")
+            pass  # Fall through to strategy 2
+        else:
+            # Unexpected error, don't retry
+            raise e
+    
+    # Strategy 2: Retry with geometry smoothing
+    try:
+        print("Attempt 2: VISCOUS mode WITH geometry smoothing...")
+        print("    (This may slightly alter airfoil shape for better convergence)")
+        return _run_xfoil_mode(coords_filename, cp_filename, work_dir, reynolds, alpha,
+                               viscous=True, timeout=90, smooth_geometry=True)
+    except subprocess.TimeoutExpired:
+        print("ERROR: Viscous mode with smoothing also timed out")
+        pass  # Fall through to strategy 3
+    except Exception as e:
+        error_msg = str(e).lower()
+        if "convergence" in error_msg or "no pressure data" in error_msg:
+            print(f"Smoothed geometry also failed: {str(e)}")
+            pass  # Fall through to strategy 3
+        else:
+            raise e
+    
+    # Strategy 3: Last resort - inviscid mode with big warning
+    print("=" * 70)
+    print("WARNING: FALLING BACK TO INVISCID MODE")
+    print("=" * 70)
+    print("Viscous solver could not converge. Possible causes:")
+    print("  - Reynolds number too low (try Re > 100,000)")
+    print("  - Extreme angle of attack (try -5° to 10°)")
+    print("  - Problematic airfoil geometry")
+    print("Returning INVISCID results (CD will be 3-5x too low)")
+    print("=" * 70)
+    
+    try:
+        return _run_xfoil_mode(coords_filename, cp_filename, work_dir, reynolds, alpha,
+                               viscous=False, timeout=20, smooth_geometry=False)
+    except Exception as e:
+        raise Exception(f"All strategies failed. Last error: {str(e)}")
 
-def _run_xfoil_mode(coords_filename: str, cp_filename: str, work_dir: str, reynolds: float, alpha: float, viscous: bool, timeout: int):
+def _run_xfoil_mode(coords_filename: str, cp_filename: str, work_dir: str, reynolds: float, alpha: float, viscous: bool, timeout: int, smooth_geometry: bool = False):
     """Linux-optimized XFOIL execution.
 
     Key differences from Windows version:
@@ -198,6 +230,7 @@ def _run_xfoil_mode(coords_filename: str, cp_filename: str, work_dir: str, reyno
     2. Uses script file method (fast and reliable on Linux)
     3. Minimal blank lines (Linux doesn't need timing delays)
     4. No zombie process killing (not needed on Linux)
+    5. Optional geometry smoothing for noisy coordinate files
     """
 
     cp_out_path = os.path.abspath(os.path.join(work_dir, cp_filename))
@@ -212,30 +245,57 @@ def _run_xfoil_mode(coords_filename: str, cp_filename: str, work_dir: str, reyno
             except Exception:
                 pass
 
-    # === BUILD SCRIPT (LINUX-OPTIMIZED) ===
+    # === BUILD SCRIPT (ROBUST VISCOUS) ===
     script_lines = []
-
+    
     # Load airfoil
-    script_lines.extend([
-        f"LOAD {coords_filename}",
-        "",
-    ])
-
-    # Simple paneling (PANE alone works great on Linux)
+    script_lines.append(f"LOAD {coords_filename}")
+    
+    # Optional geometry smoothing for noisy coordinate files
+    # CAUTION: This changes the airfoil slightly, only use when necessary
+    if smooth_geometry:
+        script_lines.extend([
+            "GDES",      # Enter geometry design
+            "FILT",      # Apply smoothing filter
+            "EXEC",      # Execute changes
+            "",          # Return to top level
+        ])
+        print("    [Applying geometry smoothing filter]")
+    
+    # Panel and enter OPER
     script_lines.extend([
         "PANE",
         "OPER",
     ])
-
+    
     if viscous:
+        # Robust viscous initialization: solve at alpha=0 first, then target alpha
+        # This "warms up" the boundary layer solver for thick airfoils
         script_lines.extend([
             f"VISC {reynolds}",
-            "ITER 200",
+            "ITER 300",
         ])
-
-    # Run analysis
+        
+        # Step-wise approach for better convergence
+        if abs(alpha) > 2:
+            # For larger angles, step through intermediate values
+            script_lines.extend([
+                "ALFA 0",      # Start at zero
+                f"ALFA {alpha/2:.2f}",  # Go halfway
+                f"ALFA {alpha}",        # Then target
+            ])
+        else:
+            # For small angles, just warm up at 0 then go direct
+            script_lines.extend([
+                "ALFA 0",
+                f"ALFA {alpha}",
+            ])
+    else:
+        # Inviscid mode
+        script_lines.append(f"ALFA {alpha}")
+    
+    # Output and quit
     script_lines.extend([
-        f"ALFA {alpha}",
         f"CPWR {cp_filename}",
         "",
         "QUIT"
@@ -322,13 +382,20 @@ def _run_xfoil_mode(coords_filename: str, cp_filename: str, work_dir: str, reyno
             print(f"Warning: Could not detect panel count")
             print(f"   XFOIL may have crashed early")
 
-        # Verify viscous mode
+        # Verify viscous mode actually ran
         if viscous:
-            visc_indicators = ["Re =", "VISCAL", "xi"]
-            if any(ind in stdout for ind in visc_indicators):
+            # Check for actual viscous calculation indicators
+            visc_indicators = ["Re =", "VISCAL", "Cm ="]
+            visc_confirmed = any(ind in stdout for ind in visc_indicators)
+            
+            # Also check it's not purely inviscid
+            has_cdp = "CDp" in stdout or "CD =" in stdout
+            
+            if visc_confirmed and has_cdp:
                 print(f"Viscous mode confirmed")
             else:
-                print(f"ERROR: Viscous mode failed - running inviscid")
+                print(f"WARNING: Viscous mode requested but may not have converged")
+                print(f"   Results may be inviscid or unconverged")
 
         print(f"{'='*70}\n")
 
@@ -392,7 +459,13 @@ def _run_xfoil_mode(coords_filename: str, cp_filename: str, work_dir: str, reyno
             print(f"   Safe to use for servo calculations")
 
         if not viscous:
-            coefficients['note'] = 'inviscid'
+            coefficients['mode'] = 'inviscid'
+            coefficients['warning'] = 'INVISCID MODE - CD is unrealistically low'
+            print(f"\n*** WARNING: INVISCID MODE ***")
+            print(f"    These results are NOT suitable for drag calculations!")
+            print(f"    CD values are 3-5x lower than reality")
+        else:
+            coefficients['mode'] = 'viscous'
 
         return cp_x, cp_values, coefficients
 
