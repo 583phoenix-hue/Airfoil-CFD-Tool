@@ -269,23 +269,26 @@ def _run_xfoil_mode(coords_filename: str, cp_filename: str, work_dir: str, reyno
         ])
         print("    [Applying geometry smoothing filter]")
     
-    # Simple approach: Just use default PANE (160 panels is actually sufficient!)
-    # The real issue was Ncrit, not panel count
+    # Simple approach: Just use default PANE (160 panels is sufficient)
     script_lines.append("PANE")
+    
+    # Set Ncrit at TOP LEVEL before entering OPER
+    # This avoids the double-blank exit bug that kicks us out of OPER
+    if viscous:
+        script_lines.extend([
+            "VPAR",   # VPAR exists at top level too
+            "N",
+            "9",
+            "",       # One blank exits VPAR back to top level (not OPER)
+        ])
     
     # Enter OPER mode
     script_lines.append("OPER")
     
     if viscous:
-        # Robust viscous initialization
         script_lines.extend([
             f"VISC {reynolds}",
-            "VPAR",      # Enter viscous parameters menu
-            "N",         # Select Ncrit parameter
-            "9",         # Set Ncrit = 9
-            "",          # Accept the value
-            "",          # Exit VPAR back to OPER level
-            "ITER 500",  # Higher iteration limit for thick airfoils
+            "ITER 500",
         ])
         
         # Step-wise approach with INIT before each angle
