@@ -245,7 +245,7 @@ def _run_xfoil_mode(coords_filename: str, cp_filename: str, work_dir: str, reyno
             except Exception:
                 pass
 
-    # === BUILD SCRIPT (ROBUST VISCOUS - NO MENU HELL) ===
+    # === BUILD SCRIPT (BULLETPROOF PANELING) ===
     script_lines = []
     
     # Load airfoil
@@ -261,24 +261,24 @@ def _run_xfoil_mode(coords_filename: str, cp_filename: str, work_dir: str, reyno
         ])
         print("    [Applying geometry smoothing filter]")
     
-    # Panel first with default settings (creates ~160 panels)
-    script_lines.append("PANE")
-    
-    # Add more panels using CADD (no menu navigation needed!)
-    # CADD adds panels at high-curvature areas (LE, TE)
+    # HIGH-RESOLUTION PANELING (using GDES to force acceptance)
     script_lines.extend([
-        "PCOP",      # Copy current paneling to buffer
-        "CADD",      # Add panels at high curvature (~220)
-        "CADD",      # Do it again (~280)
-        "PANE",      # Re-panel to accept buffer as working geometry
+        "GDES",      # Enter Geometry Design menu
+        "CADD",      # Add panels at high curvature (~220 panels)
+        "CADD",      # Add more panels (~280 panels)
+        "PCOP",      # Copy refined points to buffer
+        "EXEC",      # *** CRITICAL: Make this the new airfoil geometry ***
+        "",          # Exit GDES back to main menu
     ])
+    
+    # Panel the accepted high-res geometry
+    script_lines.append("PANE")
     
     # Enter OPER mode
     script_lines.append("OPER")
     
     if viscous:
-        # Robust viscous initialization: solve at alpha=0 first, then target alpha
-        # This "warms up" the boundary layer solver for thick airfoils
+        # Robust viscous initialization
         script_lines.extend([
             f"VISC {reynolds}",
             "VPAR",      # Enter viscous parameters menu
@@ -288,18 +288,23 @@ def _run_xfoil_mode(coords_filename: str, cp_filename: str, work_dir: str, reyno
             "ITER 500",  # Higher iteration limit for thick airfoils
         ])
         
-        # Step-wise approach for better convergence
+        # Step-wise approach with INIT before each angle
         if abs(alpha) > 2:
             # For larger angles, step through intermediate values
             script_lines.extend([
-                "ALFA 0",      # Start at zero
+                "INIT",              # Initialize boundary layer
+                "ALFA 0",            # Start at zero
+                "INIT",              # Re-initialize
                 f"ALFA {alpha/2:.2f}",  # Go halfway
-                f"ALFA {alpha}",        # Then target
+                "INIT",              # Re-initialize
+                f"ALFA {alpha}",     # Then target
             ])
         else:
-            # For small angles, just warm up at 0 then go direct
+            # For small angles
             script_lines.extend([
+                "INIT",
                 "ALFA 0",
+                "INIT",
                 f"ALFA {alpha}",
             ])
     else:
