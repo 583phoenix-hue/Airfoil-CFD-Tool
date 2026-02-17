@@ -150,17 +150,25 @@ def detect_and_merge_sections(data_lines):
     return merged
 
 def extract_aerodynamic_coefficients(stdout: str):
-    """Extract coefficients from XFOIL output."""
+    """Extract coefficients from XFOIL output.
+    
+    Takes the LAST occurrence of each coefficient to ensure we get
+    the final converged value, not an intermediate step.
+    """
     coefficients = {}
     patterns = {
         'CL': r'CL\s*=\s*([-+]?\d*\.?\d+)',
         'CD': r'CD\s*=\s*([-+]?\d*\.?\d+)',
         'CDp': r'CDp\s*=\s*([-+]?\d*\.?\d+)',
+        'Cm': r'Cm\s*=\s*([-+]?\d*\.?\d+)',
     }
+    
     for key, pattern in patterns.items():
-        match = re.search(pattern, stdout)
-        if match:
-            coefficients[key] = float(match.group(1))
+        # Find ALL matches and take the last one
+        matches = re.findall(pattern, stdout)
+        if matches:
+            coefficients[key] = float(matches[-1])  # Use last match
+    
     return coefficients
 
 def run_xfoil_sync(coords_file: str, reynolds: float, alpha: float, work_dir: str):
@@ -245,7 +253,7 @@ def _run_xfoil_mode(coords_filename: str, cp_filename: str, work_dir: str, reyno
             except Exception:
                 pass
 
-    # === BUILD SCRIPT (BULLETPROOF PANELING) ===
+    # === BUILD SCRIPT (SIMPLE AND RELIABLE) ===
     script_lines = []
     
     # Load airfoil
@@ -256,22 +264,13 @@ def _run_xfoil_mode(coords_filename: str, cp_filename: str, work_dir: str, reyno
         script_lines.extend([
             "GDES",
             "FILT",
-            "EXEC",
-            "",
+            "",      # Exit FILT
+            "",      # Exit GDES
         ])
         print("    [Applying geometry smoothing filter]")
     
-    # HIGH-RESOLUTION PANELING (using GDES to force acceptance)
-    script_lines.extend([
-        "GDES",      # Enter Geometry Design menu
-        "CADD",      # Add panels at high curvature (~220 panels)
-        "CADD",      # Add more panels (~280 panels)
-        "PCOP",      # Copy refined points to buffer
-        "EXEC",      # *** CRITICAL: Make this the new airfoil geometry ***
-        "",          # Exit GDES back to main menu
-    ])
-    
-    # Panel the accepted high-res geometry
+    # Simple approach: Just use default PANE (160 panels is actually sufficient!)
+    # The real issue was Ncrit, not panel count
     script_lines.append("PANE")
     
     # Enter OPER mode
@@ -283,8 +282,9 @@ def _run_xfoil_mode(coords_filename: str, cp_filename: str, work_dir: str, reyno
             f"VISC {reynolds}",
             "VPAR",      # Enter viscous parameters menu
             "N",         # Select Ncrit parameter
-            "9",         # Set Ncrit = 9 (typical for smooth airfoils)
-            "",          # Exit VPAR
+            "9",         # Set Ncrit = 9
+            "",          # Accept the value
+            "",          # Exit VPAR back to OPER level
             "ITER 500",  # Higher iteration limit for thick airfoils
         ])
         
@@ -416,19 +416,44 @@ def _run_xfoil_mode(coords_filename: str, cp_filename: str, work_dir: str, reyno
 
         print(f"{'='*70}\n")
 
-        # Check convergence
-        if "VISCAL:  Convergence failed" in stdout:
-            raise Exception("Convergence failed")
+        # Check convergence more thoroughly
+        convergence_failed = (
+            "VISCAL:  Convergence failed" in stdout or 
+            "not converged" in stdout.lower() or
+            "unconverged" in stdout.lower()
+        )
+        
+        if convergence_failed:
+            print(f"ERROR: Convergence failed for alpha={alpha}")
+            raise Exception(f"Viscous convergence failed at alpha={alpha}")
 
         # Check for output file
         if not os.path.exists(cp_out_path):
             print(f"ERROR: CP file not created")
-            print(f"\nLast 500 chars of XFOIL output:")
-            print(stdout[-500:])
-            raise Exception(f"{mode} did not generate output")
+            print(f"\nLast 800 chars of XFOIL output:")
+            print(stdout[-800:])
+            raise Exception(f"{mode} did not generate output file")
 
         # Extract coefficients
         coefficients = extract_aerodynamic_coefficients(stdout)
+        
+        # Verify we got valid coefficients for the requested alpha
+        if not coefficients or 'CL' not in coefficients:
+            print(f"ERROR: No coefficients extracted from XFOIL output")
+            print(f"\nChecking if ALFA {alpha} was processed:")
+            # Look for alpha in various output formats
+            alpha_patterns = [
+                f"alfa = {alpha:.3f}",
+                f"ALFA   {alpha:.2f}",
+                f"a = {alpha:.2f}",
+            ]
+            found_alpha = any(pattern.lower() in stdout.lower() for pattern in alpha_patterns)
+            if found_alpha:
+                print(f"  Alpha command was processed")
+            else:
+                print(f"  WARNING: Could not verify alpha={alpha} was calculated!")
+                print(f"  This suggests XFOIL may have used cached/stale results")
+            raise Exception(f"No valid aerodynamic coefficients found for alpha={alpha}")
 
         # Parse CP data
         cp_x, cp_values = [], []
