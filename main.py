@@ -262,6 +262,13 @@ def _run_xfoil_mode(coords_filename: str, cp_filename: str, work_dir: str, reyno
         ])
         print("    [Applying geometry smoothing filter]")
     
+    # Set panel density - CRITICAL for viscous convergence
+    script_lines.extend([
+        "PPAR",
+        "N 280",     # 280 panels (higher density for thick airfoils)
+        "",          # Accept and exit PPAR
+    ])
+    
     # Panel and enter OPER
     script_lines.extend([
         "PANE",
@@ -273,7 +280,10 @@ def _run_xfoil_mode(coords_filename: str, cp_filename: str, work_dir: str, reyno
         # This "warms up" the boundary layer solver for thick airfoils
         script_lines.extend([
             f"VISC {reynolds}",
-            "ITER 300",
+            "VPAR",      # Enter viscous parameters menu
+            "N 9",       # Ncrit = 9 (typical for smooth airfoils, triggers transition)
+            "",          # Exit VPAR
+            "ITER 500",  # Higher iteration limit for thick airfoils
         ])
         
         # Step-wise approach for better convergence
