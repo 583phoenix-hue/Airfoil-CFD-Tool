@@ -265,8 +265,9 @@ def _run_xfoil_mode(coords_filename: str, cp_filename: str, work_dir: str, reyno
     # Set panel density - CRITICAL for viscous convergence
     script_lines.extend([
         "PPAR",
-        "N 280",     # 280 panels (higher density for thick airfoils)
-        "",          # Accept and exit PPAR
+        "N",         # Select N parameter
+        "280",       # Set value to 280
+        "",          # Blank to exit PPAR
     ])
     
     # Panel and enter OPER
@@ -281,7 +282,8 @@ def _run_xfoil_mode(coords_filename: str, cp_filename: str, work_dir: str, reyno
         script_lines.extend([
             f"VISC {reynolds}",
             "VPAR",      # Enter viscous parameters menu
-            "N 9",       # Ncrit = 9 (typical for smooth airfoils, triggers transition)
+            "N",         # Select Ncrit parameter
+            "9",         # Set Ncrit = 9 (typical for smooth airfoils)
             "",          # Exit VPAR
             "ITER 500",  # Higher iteration limit for thick airfoils
         ])
