@@ -10,14 +10,23 @@ st.set_page_config(
     initial_sidebar_state="collapsed"
 )
 
+# Always hide sidebar completely across all pages
+st.markdown("""
+    <style>
+        [data-testid="stSidebarNav"]    {display: none;}
+        [data-testid="collapsedControl"] {display: none;}
+        section[data-testid="stSidebar"] {display: none;}
+    </style>
+""", unsafe_allow_html=True)
+
 # Initialize database on app startup
 init_db()
 
 # ── Backend Health Check ────────────────────────────────────────────────────
-BACKEND_URL = "https://aerolab-backend.onrender.com/health"
+BACKEND_URL = "https://aerolab-backend.onrender.com"
 
 
-@st.cache_data(ttl=30)  # Re-check at most once every half-minute
+@st.cache_data(ttl=30)  # Re-check at most once per half-minute
 def check_backend() -> str:
     """
     Returns one of three states:
@@ -46,10 +55,10 @@ backend_status = check_backend()
 if backend_status == "suspended" and not st.session_state.get("suspension_popup_shown"):
     @st.dialog("🛠️ Solver Temporarily Unavailable")
     def suspension_popup():
-        st.warning("**Solver is undergoing maintenance**")
+        st.warning("**Scheduled Maintenance Underway**")
         st.markdown(
-            "The aerodynamic solver is undergoing scheduled maintenance "
-            "Try again later.\n\n"
+            "The aerodynamic solver is undergoing scheduled maintenance. "
+            "Please check again shortly.\n\n"
             "You can still browse the site — analysis functionality will return shortly!"
         )
         if st.button("Got it", use_container_width=True, type="primary"):

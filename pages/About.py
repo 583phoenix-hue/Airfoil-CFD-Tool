@@ -1,7 +1,17 @@
 import streamlit as st
 
 # Page configuration
-st.set_page_config(page_title="About - AeroLab", layout="wide", page_icon="✈️")
+st.set_page_config(page_title="About - AeroLab", layout="wide", page_icon="✈️",
+                   initial_sidebar_state="collapsed")
+
+# Always hide sidebar completely
+st.markdown("""
+    <style>
+        [data-testid="stSidebarNav"]    {display: none;}
+        [data-testid="collapsedControl"] {display: none;}
+        section[data-testid="stSidebar"] {display: none;}
+    </style>
+""", unsafe_allow_html=True)
 
 # Back button
 if st.button("← Back to Home"):
@@ -157,7 +167,7 @@ developed by Professor Mark Drela at MIT. It combines:
 <ul style="font-size: 1.05rem; line-height: 1.8;">
     <li><strong>Frontend:</strong> Streamlit (Python) for interactive web interface</li>
     <li><strong>Backend:</strong> FastAPI with XFOIL integration</li>
-    <li><strong>Deployment:</strong> Containerized on Render with automatic scaling</li>
+    <li><strong>Deployment:</strong> Streamlit Community Cloud (frontend) + Render (backend)</li>
     <li><strong>Caching:</strong> Smart result caching for improved performance</li>
 </ul>
 </div>
@@ -166,11 +176,9 @@ developed by Professor Mark Drela at MIT. It combines:
 # Developer Section
 st.markdown('<h2 class="section-title">👨‍💻 Developer</h2>', unsafe_allow_html=True)
 
-# Developer card - centered
 dev_col1, dev_col2, dev_col3 = st.columns([1, 2, 1])
 
 with dev_col2:
-    # Center the image
     col_img1, col_img2, col_img3 = st.columns([1, 2, 1])
     with col_img2:
         try:
@@ -207,7 +215,7 @@ step_col1, step_col2, step_col3, step_col4 = st.columns(4)
 with step_col1:
     st.markdown("""
     <div class="content-box" style="text-align: center;">
-    <div style="font-size: 3rem;">📁</div>
+    <div style="font-size: 3rem;">🔍</div>
     <h4>1. Get Airfoil Data</h4>
     <p>Download .dat coordinate files from UIUC Airfoil Database or Airfoil Tools</p>
     </div>
