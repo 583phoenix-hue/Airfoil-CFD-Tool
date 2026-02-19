@@ -16,6 +16,13 @@ st.markdown("""
         [data-testid="stSidebarNav"]    {display: none;}
         [data-testid="collapsedControl"] {display: none;}
         section[data-testid="stSidebar"] {display: none;}
+
+        /* Hide Streamlit branding */
+        footer {visibility: hidden;}
+        #MainMenu {visibility: hidden;}
+        header {visibility: hidden;}
+        div[data-testid="stToolbar"]    {visibility: hidden; height: 0%;}
+        div[data-testid="stDecoration"] {visibility: hidden; height: 0%;}
     </style>
 """, unsafe_allow_html=True)
 
@@ -23,7 +30,7 @@ st.markdown("""
 init_db()
 
 # ── Backend Health Check ────────────────────────────────────────────────────
-BACKEND_URL = "https://aerolab-backend.onrender.com"
+BACKEND_URL = "https://aerolab-backend.onrender.com/health"
 
 
 @st.cache_data(ttl=30)  # Re-check at most once per half-minute
@@ -177,7 +184,7 @@ with col2:
         # 🔴 Offline / cold starting — softer message since it may just be waking up
         st.warning("⏳ Solver Waking Up...")
         st.info(
-            "The aerodynamic solver is currently starting up. "
+            "The aerodynamic solver is currently starting up due to inactivity. "
             "Please wait ~30 seconds and refresh the page."
         )
         st.button("🚀 Analyze Airfoil (Starting...)", key="analyze_offline", use_container_width=True, disabled=True)

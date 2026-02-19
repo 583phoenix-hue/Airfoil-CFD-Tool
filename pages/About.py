@@ -10,6 +10,13 @@ st.markdown("""
         [data-testid="stSidebarNav"]    {display: none;}
         [data-testid="collapsedControl"] {display: none;}
         section[data-testid="stSidebar"] {display: none;}
+
+        /* Hide Streamlit branding */
+        footer {visibility: hidden;}
+        #MainMenu {visibility: hidden;}
+        header {visibility: hidden;}
+        div[data-testid="stToolbar"]    {visibility: hidden; height: 0%;}
+        div[data-testid="stDecoration"] {visibility: hidden; height: 0%;}
     </style>
 """, unsafe_allow_html=True)
 

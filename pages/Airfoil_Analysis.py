@@ -18,6 +18,13 @@ st.markdown("""
         [data-testid="collapsedControl"] {display: none;}
         section[data-testid="stSidebar"] {display: none;}
 
+        /* Hide Streamlit branding */
+        footer {visibility: hidden;}
+        #MainMenu {visibility: hidden;}
+        header {visibility: hidden;}
+        div[data-testid="stToolbar"]    {visibility: hidden; height: 0%;}
+        div[data-testid="stDecoration"] {visibility: hidden; height: 0%;}
+
         .param-label {
             font-size: 0.82rem;
             font-weight: 600;
