@@ -1,5 +1,5 @@
 import streamlit as st
-import streamlit.components.v1 as components
+import requests
 from db_utils import init_db, get_analysis_count
 
 # Page configuration
@@ -13,15 +13,50 @@ st.set_page_config(
 # Initialize database on app startup
 init_db()
 
-# Google Search Console Verification + SEO Meta Tags
-components.html(
+# ── Backend Health Check ────────────────────────────────────────────────────
+BACKEND_URL = "https://aerolab-backend.onrender.com/health"
+
+
+@st.cache_data(ttl=30)  # Re-check at most once every half-minute
+def check_backend() -> str:
     """
-    <meta name="google-site-verification" content="1hFr-qeLMHx9cQeuCHjuGEIPih3uLpk1HBXuro1u9as" />
-    <meta name="description" content="Free online airfoil analysis tool powered by XFOIL. Analyze lift, drag, and pressure distribution for aircraft wings. Perfect for students, engineers, and aerospace enthusiasts.">
-    <meta name="keywords" content="airfoil analysis, XFOIL, aerodynamics, CFD, aircraft design, lift drag analysis, aerospace engineering, free airfoil tool, aerolab">
-    """,
-    height=0,
-)
+    Returns one of three states:
+      "online"    — backend responded and is healthy
+      "suspended" — Render's monthly limit page detected
+      "offline"   — timeout, connection error, or unexpected response
+    """
+    try:
+        response = requests.get(f"{BACKEND_URL}/health", timeout=8)
+        # Render serves a plain-text/HTML suspension notice with status 200
+        # We detect it by looking for the suspension message in the body
+        if "suspended" in response.text.lower() or "service has been suspended" in response.text.lower():
+            return "suspended"
+        if response.status_code == 200:
+            return "online"
+        return "offline"
+    except requests.exceptions.Timeout:
+        # Cold start timeout — don't penalise users, treat as offline for now
+        return "offline"
+    except Exception:
+        return "offline"
+
+backend_status = check_backend()
+
+# Show popup once per session if backend is suspended
+if backend_status == "suspended" and not st.session_state.get("suspension_popup_shown"):
+    @st.dialog("🛠️ Solver Temporarily Unavailable")
+    def suspension_popup():
+        st.warning("**Solver is undergoing maintenance**")
+        st.markdown(
+            "The aerodynamic solver is undergoing scheduled maintenance "
+            "Try again later.\n\n"
+            "You can still browse the site — analysis functionality will return shortly!"
+        )
+        if st.button("Got it", use_container_width=True, type="primary"):
+            st.session_state["suspension_popup_shown"] = True
+            st.rerun()
+    suspension_popup()
+# ───────────────────────────────────────────────────────────────────────────
 
 # Custom CSS
 st.markdown("""
@@ -109,19 +144,39 @@ st.markdown(
     unsafe_allow_html=True
 )
 
-# Spacer
 st.markdown("<br>", unsafe_allow_html=True)
 
-# Call-to-Action Buttons
+# ── Call-to-Action Buttons ──────────────────────────────────────────────────
 col1, col2, col3 = st.columns([1, 1, 1])
 
 with col2:
-    if st.button("🚀 Analyze Airfoil", key="analyze", use_container_width=True, type="primary"):
-        # Increment counter is now handled in Airfoil_Analysis.py when analysis actually runs
-        st.switch_page("pages/Airfoil_Analysis.py")
-    
+    if backend_status == "online":
+        # ✅ Backend healthy — full functionality
+        if st.button("🚀 Analyze Airfoil", key="analyze", use_container_width=True, type="primary"):
+            st.switch_page("pages/Airfoil_Analysis.py")
+
+    elif backend_status == "suspended":
+        # 🛠️ Render monthly limit hit — show clear maintenance notice
+        st.error("🛠️ Maintenance Ongoing")
+        st.info(
+            "Wind tunnel undergoing maintenance for a better experience. "
+            "Check back soon!"
+        )
+        st.button("🚀 Analyze Airfoil (Offline)", key="analyze_suspended", use_container_width=True, disabled=True)
+
+    else:
+        # 🔴 Offline / cold starting — softer message since it may just be waking up
+        st.warning("⏳ Solver Waking Up...")
+        st.info(
+            "The aerodynamic solver is currently starting up. "
+            "Please wait ~30 seconds and refresh the page."
+        )
+        st.button("🚀 Analyze Airfoil (Starting...)", key="analyze_offline", use_container_width=True, disabled=True)
+
     if st.button("📖 About AeroLab", key="about", use_container_width=True):
         st.switch_page("pages/About.py")
+
+# ───────────────────────────────────────────────────────────────────────────
 
 st.markdown("<br><br>", unsafe_allow_html=True)
 
@@ -137,7 +192,6 @@ if analysis_count is not None:
         </div>
     """, unsafe_allow_html=True)
 else:
-    # Fallback if database is not available
     st.markdown("""
         <div class="visitor-counter">
             <div class="counter-label">🔬 Analysis Counter</div>
