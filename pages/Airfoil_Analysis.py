@@ -57,9 +57,12 @@ st.markdown("""
 
 # ── Backend Health Check ────────────────────────────────────────────────────
 BACKEND_URL = "https://aerolab-backend.onrender.com"
+IS_LOCAL = os.environ.get("LOCAL_DEV", "false").lower() == "true"
 
 @st.cache_data(ttl=60, show_spinner=False)
 def check_backend() -> str:
+    if IS_LOCAL:
+        return "online"  # Skip health check when running locally
     try:
         r = requests.get(f"{BACKEND_URL}/health", timeout=8)
         if "suspended" in r.text.lower() or "service has been suspended" in r.text.lower():

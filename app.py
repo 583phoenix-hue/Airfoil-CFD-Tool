@@ -1,5 +1,6 @@
 import streamlit as st
 import requests
+import os
 from db_utils import init_db, get_analysis_count
 
 # Page configuration
@@ -30,10 +31,10 @@ st.markdown("""
 init_db()
 
 # ── Backend Health Check ────────────────────────────────────────────────────
-BACKEND_URL = "https://aerolab-backend.onrender.com/health"
+BACKEND_URL = "https://aerolab-backend.onrender.com"
+IS_LOCAL = os.environ.get("LOCAL_DEV", "false").lower() == "true"
 
-
-@st.cache_data(ttl=30)  # Re-check at most once per half-minute
+@st.cache_data(ttl=30, show_spinner=False)
 def check_backend() -> str:
     """
     Returns one of three states:
@@ -41,17 +42,16 @@ def check_backend() -> str:
       "suspended" — Render's monthly limit page detected
       "offline"   — timeout, connection error, or unexpected response
     """
+    if IS_LOCAL:
+        return "online"  # Skip health check when running locally
     try:
         response = requests.get(f"{BACKEND_URL}/health", timeout=8)
-        # Render serves a plain-text/HTML suspension notice with status 200
-        # We detect it by looking for the suspension message in the body
         if "suspended" in response.text.lower() or "service has been suspended" in response.text.lower():
             return "suspended"
         if response.status_code == 200:
             return "online"
         return "offline"
     except requests.exceptions.Timeout:
-        # Cold start timeout — don't penalise users, treat as offline for now
         return "offline"
     except Exception:
         return "offline"
