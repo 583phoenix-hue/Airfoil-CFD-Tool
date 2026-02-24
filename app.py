@@ -39,11 +39,9 @@ def check_backend() -> str:
     """
     Returns one of three states:
       "online"    — backend responded and is healthy
-      "suspended" — Render's monthly limit page detected
+      "suspended" — Render monthly limit page detected
       "offline"   — timeout, connection error, or unexpected response
     """
-    if IS_LOCAL:
-        return "online"  # Skip health check when running locally
     try:
         response = requests.get(f"{BACKEND_URL}/health", timeout=8)
         if "suspended" in response.text.lower() or "service has been suspended" in response.text.lower():
@@ -56,7 +54,8 @@ def check_backend() -> str:
     except Exception:
         return "offline"
 
-backend_status = check_backend()
+# Bypass health check entirely when running locally
+backend_status = "online" if IS_LOCAL else check_backend()
 
 # Show popup once per session if backend is suspended
 if backend_status == "suspended" and not st.session_state.get("suspension_popup_shown"):

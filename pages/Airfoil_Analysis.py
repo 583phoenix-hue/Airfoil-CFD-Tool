@@ -61,8 +61,6 @@ IS_LOCAL = os.environ.get("LOCAL_DEV", "false").lower() == "true"
 
 @st.cache_data(ttl=60, show_spinner=False)
 def check_backend() -> str:
-    if IS_LOCAL:
-        return "online"  # Skip health check when running locally
     try:
         r = requests.get(f"{BACKEND_URL}/health", timeout=8)
         if "suspended" in r.text.lower() or "service has been suspended" in r.text.lower():
@@ -73,7 +71,8 @@ def check_backend() -> str:
     except Exception:
         return "offline"
 
-backend_status = check_backend()
+# Bypass health check entirely when running locally
+backend_status = "online" if IS_LOCAL else check_backend()
 
 # Block the entire page if backend is not online
 if backend_status != "online":
