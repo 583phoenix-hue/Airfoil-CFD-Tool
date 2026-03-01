@@ -270,7 +270,7 @@ def render_heatmap_png(speed_grid_tuple, x_arr_tuple, y_arr_tuple, coords_tuple,
     return f"data:image/png;base64,{b64}"
 
 
-def build_flow_animation(sl_x, sl_y, speed_grid, x_arr, y_arr, coords, alpha_deg):
+def build_flow_animation(sl_x, sl_y, speed_grid, x_arr, y_arr, coords, alpha_deg, show_particles=True, show_streamlines=True):
     """
     layout.images[0] : permanent PNG background (heatmap + airfoil fill)
     Trace 0 : streamlines (static)
@@ -318,7 +318,8 @@ def build_flow_animation(sl_x, sl_y, speed_grid, x_arr, y_arr, coords, alpha_deg
         x=all_sx, y=all_sy,
         mode="lines",
         line=dict(width=1.0, color="rgba(255,255,255,0.35)"),
-        hoverinfo="skip", showlegend=False
+        hoverinfo="skip", showlegend=False,
+        visible=show_streamlines,
     )
 
     # ── Trace 1: Airfoil outline ──────────────────────────────────────────
@@ -372,7 +373,8 @@ def build_flow_animation(sl_x, sl_y, speed_grid, x_arr, y_arr, coords, alpha_deg
         x=dx0, y=dy0,
         mode="markers",
         marker=dict(size=5, color="white", opacity=0.9, line=dict(width=0)),
-        hoverinfo="skip", showlegend=False
+        hoverinfo="skip", showlegend=False,
+        visible=show_particles,
     )
 
     # ── Trace 3: Invisible colorbar ───────────────────────────────────────
@@ -564,6 +566,10 @@ if 'results' not in st.session_state:
     st.session_state.results = None
 if 'last_params' not in st.session_state:
     st.session_state.last_params = None
+if 'show_particles' not in st.session_state:
+    st.session_state.show_particles = True
+if 'show_streamlines' not in st.session_state:
+    st.session_state.show_streamlines = True
 
 @st.cache_data(ttl=3600, show_spinner=False, max_entries=50)
 def run_xfoil_analysis(file_content: bytes, filename: str, reynolds: float, alpha: float, backend_url: str):
