@@ -855,6 +855,37 @@ with right_col:
         # ── Airflow Visualization ─────────────────────────────────────────
         st.markdown("---")
         st.subheader("🌊 Airflow Visualization")
+
+        # ── Toggle controls ───────────────────────────────────────────────
+        tog_col1, tog_col2, _ = st.columns([1, 1, 4])
+
+        def _toggle_html(label, active):
+            track = "#2dd4bf" if active else "#475569"
+            knob  = "translateX(22px)" if active else "translateX(0px)"
+            return f"""<div style="display:flex;align-items:center;gap:10px;
+                        color:#e2e8f0;font-size:0.9rem;font-weight:600;margin-bottom:2px;">
+              <div style="width:48px;height:26px;border-radius:999px;background:{track};
+                display:inline-block;position:relative;flex-shrink:0;">
+                <div style="width:20px;height:20px;border-radius:50%;background:white;
+                  position:absolute;top:3px;left:3px;transform:{knob};transition:.3s;"></div>
+              </div>
+              {label}
+            </div>"""
+
+        with tog_col1:
+            st.markdown(_toggle_html("Dot Particles", st.session_state.show_particles), unsafe_allow_html=True)
+            if st.button("Turn OFF" if st.session_state.show_particles else "Turn ON",
+                         key="btn_particles", use_container_width=True):
+                st.session_state.show_particles = not st.session_state.show_particles
+                st.rerun()
+
+        with tog_col2:
+            st.markdown(_toggle_html("Streamlines", st.session_state.show_streamlines), unsafe_allow_html=True)
+            if st.button("Turn OFF" if st.session_state.show_streamlines else "Turn ON",
+                         key="btn_streamlines", use_container_width=True):
+                st.session_state.show_streamlines = not st.session_state.show_streamlines
+                st.rerun()
+
         st.caption("Speed heatmap with animated flow particles. Press ▶ Play to animate. Use the camera icon to save PNG.")
         try:
             with st.spinner("Computing flow field... (higher resolution may take ~60s on first run)"):
@@ -863,7 +894,9 @@ with right_col:
                     last_params['alpha']
                 )
             flow_fig = build_flow_animation(
-                sl_x, sl_y, speed_grid, x_arr, y_arr, coords_list, last_params['alpha']
+                sl_x, sl_y, speed_grid, x_arr, y_arr, coords_list, last_params['alpha'],
+                show_particles=st.session_state.show_particles,
+                show_streamlines=st.session_state.show_streamlines,
             )
             st.plotly_chart(flow_fig, use_container_width=True)
         except Exception as e:
