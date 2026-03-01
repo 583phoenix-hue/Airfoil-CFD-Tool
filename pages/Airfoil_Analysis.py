@@ -856,83 +856,6 @@ with right_col:
         st.markdown("---")
         st.subheader("🌊 Airflow Visualization")
 
-        # ── Toggle controls ───────────────────────────────────────────────
-        # Each toggle is a Streamlit button with custom CSS that makes it look
-        # exactly like a sliding toggle — clicking anywhere on it works.
-        st.markdown("""
-        <style>
-        /* Hide default button text and restyle as toggle pill */
-        div[data-testid="stHorizontalBlock"] > div:nth-child(1) button,
-        div[data-testid="stHorizontalBlock"] > div:nth-child(2) button {
-            background: transparent !important;
-            border: none !important;
-            padding: 0 !important;
-            box-shadow: none !important;
-            width: auto !important;
-            min-height: 0 !important;
-        }
-        .tog-wrap {
-            display: inline-flex; align-items: center; gap: 10px;
-            color: #e2e8f0; font-size: 0.92rem; font-weight: 600;
-            cursor: pointer; padding: 4px 0;
-        }
-        .tog-track {
-            width: 48px; height: 26px; border-radius: 999px;
-            position: relative; flex-shrink: 0; transition: background .25s;
-        }
-        .tog-knob {
-            width: 20px; height: 20px; border-radius: 50%; background: white;
-            position: absolute; top: 3px; left: 3px; transition: transform .25s;
-        }
-        </style>
-        """, unsafe_allow_html=True)
-
-        tog_col1, tog_col2, _ = st.columns([1, 1, 4])
-
-        with tog_col1:
-            p_on = st.session_state.show_particles
-            st.markdown(f"""
-            <div class="tog-wrap">
-              <div class="tog-track" style="background:{'#2dd4bf' if p_on else '#475569'};">
-                <div class="tog-knob" style="transform:{'translateX(22px)' if p_on else 'translateX(0px)'};"></div>
-              </div>
-              <span>Dot Particles</span>
-            </div>""", unsafe_allow_html=True)
-            # Invisible button covering the same row — clicking it fires the rerun
-            if st.button("​", key="btn_particles", use_container_width=True,
-                         help="Toggle dot particles"):
-                st.session_state.show_particles = not st.session_state.show_particles
-                st.rerun()
-
-        with tog_col2:
-            s_on = st.session_state.show_streamlines
-            st.markdown(f"""
-            <div class="tog-wrap">
-              <div class="tog-track" style="background:{'#2dd4bf' if s_on else '#475569'};">
-                <div class="tog-knob" style="transform:{'translateX(22px)' if s_on else 'translateX(0px)'};"></div>
-              </div>
-              <span>Streamlines</span>
-            </div>""", unsafe_allow_html=True)
-            if st.button("​", key="btn_streamlines", use_container_width=True,
-                         help="Toggle streamlines"):
-                st.session_state.show_streamlines = not st.session_state.show_streamlines
-                st.rerun()
-
-        # Push buttons up to overlap the toggle visuals via negative margin
-        st.markdown("""
-        <style>
-        /* Pull the button row up to sit on top of the toggle visuals */
-        div[data-testid="stHorizontalBlock"] > div:nth-child(1) > div,
-        div[data-testid="stHorizontalBlock"] > div:nth-child(2) > div {
-            margin-top: -38px;
-        }
-        div[data-testid="stHorizontalBlock"] > div:nth-child(1) button p,
-        div[data-testid="stHorizontalBlock"] > div:nth-child(2) button p {
-            font-size: 0 !important;  /* hide button label text */
-        }
-        </style>
-        """, unsafe_allow_html=True)
-
         st.caption("Speed heatmap with animated flow particles. Press ▶ Play to animate. Use the camera icon to save PNG.")
         try:
             with st.spinner("Computing flow field... (higher resolution may take ~60s on first run)"):
@@ -948,6 +871,19 @@ with right_col:
             st.plotly_chart(flow_fig, use_container_width=True)
         except Exception as e:
             st.error(f"⚠️ Visualization error: {e}")
+
+        # ── Checkboxes below graph ────────────────────────────────────────
+        cb_col1, cb_col2, _ = st.columns([1, 1, 4])
+        with cb_col1:
+            new_p = st.checkbox("Show Dot Particles", value=st.session_state.show_particles, key="cb_particles")
+            if new_p != st.session_state.show_particles:
+                st.session_state.show_particles = new_p
+                st.rerun()
+        with cb_col2:
+            new_s = st.checkbox("Show Streamlines", value=st.session_state.show_streamlines, key="cb_streamlines")
+            if new_s != st.session_state.show_streamlines:
+                st.session_state.show_streamlines = new_s
+                st.rerun()
 
         with st.expander("ℹ️ About This Visualization"):
             st.markdown("""
