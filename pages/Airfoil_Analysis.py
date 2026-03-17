@@ -15,9 +15,10 @@ from db_utils import increment_analysis_count
 @st.cache_data(show_spinner=False)
 def compute_flow_field(coords_tuple, alpha_deg, n_streamlines=22, grid_res=220):
     """
-    Vortex panel method flow field.
-    N=160 panels for smooth velocity field.
-    grid_res=220 for sharp heatmap resolution.
+    Vortex panel method — constant-strength vortex panels.
+    N=160 cosine-spaced panels. Zero-diagonal influence matrix with Kutta
+    condition replacing the last row. Gives symmetric solutions for symmetric
+    airfoils and physically correct off-body velocity fields for visualization.
     Returns: sl_x, sl_y, speed_grid, x_arr, y_arr, coords
     """
     from matplotlib.path import Path as MplPath
@@ -30,11 +31,12 @@ def compute_flow_field(coords_tuple, alpha_deg, n_streamlines=22, grid_res=220):
     yc = coords[:, 1]
     chord = xc.max() - xc.min()
 
-    # ── 1. Build panels (N=160 for smooth field) ──────────────────────────
-    N = min(160, len(coords) - 1)
+    # ── 1. Cosine-spaced panels ────────────────────────────────────────────
+    N = 160
     dx_ = np.diff(xc); dy_ = np.diff(yc)
     arc = np.concatenate([[0], np.cumsum(np.hypot(dx_, dy_))])
-    arc_u = np.linspace(0, arc[-1], N + 1)
+    beta_arr = np.linspace(0, np.pi, N + 1)
+    arc_u = arc[-1] * 0.5 * (1.0 - np.cos(beta_arr))
     xp = np.interp(arc_u, arc, xc)
     yp = np.interp(arc_u, arc, yc)
 
@@ -43,72 +45,80 @@ def compute_flow_field(coords_tuple, alpha_deg, n_streamlines=22, grid_res=220):
     dx = xp[1:] - xp[:-1]
     dy = yp[1:] - yp[:-1]
     panel_len = np.hypot(dx, dy)
-    sin_t = dy / panel_len
-    cos_t = dx / panel_len
-    nx_panel = -sin_t
-    ny_panel =  cos_t
+    ct = dx / panel_len
+    st = dy / panel_len
+    nx = -st   # inward normals
+    ny =  ct
 
-    # ── 2. Influence matrix ───────────────────────────────────────────────
-    A = np.zeros((N + 1, N + 1))
-
-    def vortex_vel(xi, yi, xj1, yj1, xj2, yj2):
-        dxj = xj2 - xj1; dyj = yj2 - yj1
-        Lj  = np.hypot(dxj, dyj)
-        cos_j = dxj / Lj; sin_j = dyj / Lj
-        xlt =  (xi - xj1) * cos_j + (yi - yj1) * sin_j
-        ylt = -(xi - xj1) * sin_j + (yi - yj1) * cos_j
+    # ── 2. Vortex panel velocity kernel ───────────────────────────────────
+    def vortex_vel(xi, yi, x1, y1, x2, y2):
+        dxj = x2 - x1; dyj = y2 - y1
+        Lj  = np.hypot(dxj, dyj) + 1e-14
+        c = dxj / Lj; s = dyj / Lj
+        xlt =  (xi - x1) * c + (yi - y1) * s
+        ylt = -(xi - x1) * s + (yi - y1) * c
         r1sq = xlt**2 + ylt**2 + 1e-14
         r2sq = (xlt - Lj)**2 + ylt**2 + 1e-14
-        theta1 = np.arctan2(ylt, xlt)
-        theta2 = np.arctan2(ylt, xlt - Lj)
-        u_loc = -(theta2 - theta1) / (2 * np.pi)
-        v_loc =  0.5 / (2 * np.pi) * np.log(r1sq / r2sq)
-        u = u_loc * cos_j - v_loc * sin_j
-        v = u_loc * sin_j + v_loc * cos_j
-        return u, v
+        t1 = np.arctan2(ylt, xlt)
+        t2 = np.arctan2(ylt, xlt - Lj)
+        u_l = -(t2 - t1) / (2.0 * np.pi)
+        v_l =  0.5 / (2.0 * np.pi) * np.log(r1sq / r2sq)
+        return u_l * c - v_l * s, u_l * s + v_l * c
 
+    # ── 3. Influence matrix + Kutta ────────────────────────────────────────
+    # Zero diagonal (normal self-influence = 0 for vortex panels).
+    # Last row replaced with Kutta: gamma[0] + gamma[N-1] = 0.
+    A = np.zeros((N, N))
     for i in range(N):
         for j in range(N):
-            u, v = vortex_vel(xm[i], ym[i], xp[j], yp[j], xp[j+1], yp[j+1])
-            A[i, j] += u * nx_panel[i] + v * ny_panel[i]
-        A[i, i] += 0.5
+            if i != j:
+                ug, vg = vortex_vel(xm[i], ym[i], xp[j], yp[j], xp[j+1], yp[j+1])
+                A[i, j] = ug * nx[i] + vg * ny[i]
 
-    rhs = np.zeros(N + 1)
-    rhs[:N] = -(U0 * np.cos(alpha_r) * nx_panel + U0 * np.sin(alpha_r) * ny_panel)
-    A[N, 0]   =  1.0
-    A[N, N-1] =  1.0
-    rhs[N]    =  0.0
+    A[N-1, :]   = 0.0
+    A[N-1, 0]   = 1.0
+    A[N-1, N-1] = 1.0
 
-    # ── 3. Solve ──────────────────────────────────────────────────────────
+    rhs = -(U0 * np.cos(alpha_r) * nx + U0 * np.sin(alpha_r) * ny)
+    rhs[N-1] = 0.0
+
+    # ── 4. Solve — cosine default, uniform fallback for ill-conditioned ────
+    # Cosine spacing can create tiny LE panels on high-camber airfoils
+    # (e.g. S1223), blowing up condition number. Detect via max|gamma| > 50
+    # and retry with uniform arc-length spacing.
     try:
-        gamma = np.linalg.solve(A, rhs)
+        gamma_a = np.linalg.solve(A, rhs)
     except np.linalg.LinAlgError:
-        gamma = np.linalg.lstsq(A, rhs, rcond=None)[0]
+        gamma_a = np.linalg.lstsq(A, rhs, rcond=None)[0]
+
+    if np.max(np.abs(gamma_a)) > 500.0:
+        arc_u2 = np.linspace(0, arc[-1], N + 1)
+        xp = np.interp(arc_u2, arc, xc); yp = np.interp(arc_u2, arc, yc)
+        xm = 0.5*(xp[:-1]+xp[1:]); ym = 0.5*(yp[:-1]+yp[1:])
+        dx = xp[1:]-xp[:-1]; dy = yp[1:]-yp[:-1]
+        panel_len = np.hypot(dx, dy)
+        ct = dx/panel_len; st = dy/panel_len
+        nx = -st; ny = ct
+        A2 = np.zeros((N, N))
+        for i in range(N):
+            for j in range(N):
+                if i != j:
+                    ug, vg = vortex_vel(xm[i], ym[i], xp[j], yp[j], xp[j+1], yp[j+1])
+                    A2[i, j] = ug * nx[i] + vg * ny[i]
+        A2[N-1,:]=0.0; A2[N-1,0]=1.0; A2[N-1,N-1]=1.0
+        rhs2 = -(U0*np.cos(alpha_r)*nx + U0*np.sin(alpha_r)*ny)
+        rhs2[N-1] = 0.0
+        try:
+            gamma_a = np.linalg.solve(A2, rhs2)
+        except np.linalg.LinAlgError:
+            gamma_a = np.linalg.lstsq(A2, rhs2, rcond=None)[0]
 
     airfoil_path = MplPath(coords)
-    gamma_a = gamma[:N]
 
-    # ── 4. Surface tangential speed ───────────────────────────────────────
-    Vt_surface = np.zeros(N)
-    for i in range(N):
-        Vt_surface[i] = U0 * (np.cos(alpha_r) * cos_t[i] + np.sin(alpha_r) * sin_t[i])
-        xj1=xp[:N]; yj1=yp[:N]; xj2=xp[1:N+1]; yj2=yp[1:N+1]
-        dxj=xj2-xj1; dyj=yj2-yj1; Lj=np.hypot(dxj,dyj)+1e-14
-        cj=dxj/Lj; sj=dyj/Lj
-        xlt=(xm[i]-xj1)*cj+(ym[i]-yj1)*sj
-        ylt=-(xm[i]-xj1)*sj+(ym[i]-yj1)*cj
-        r1sq=xlt**2+ylt**2+1e-14; r2sq=(xlt-Lj)**2+ylt**2+1e-14
-        th1=np.arctan2(ylt,xlt); th2=np.arctan2(ylt,xlt-Lj)
-        ul=-(th2-th1)/(2*np.pi); vl=0.5/(2*np.pi)*np.log(r1sq/r2sq)
-        ug=ul*cj-vl*sj; vg=ul*sj+vl*cj
-        Vt_surface[i] += float(np.dot(gamma_a, ug*cos_t[i]+vg*sin_t[i])) + 0.5*gamma_a[i]
-    Vt_surface = np.abs(Vt_surface)
-
-    # ── 5. Velocity grid (vectorised, high-res) ───────────────────────────
-    pad_x = chord * 0.60
-    pad_y = chord * 0.60
-    x1g = xc.min() - pad_x;  x2g = xc.max() + pad_x
-    y1g = yc.min() - pad_y;  y2g = yc.max() + pad_y
+    # ── 5. Off-body velocity grid ──────────────────────────────────────────
+    pad = chord * 0.60
+    x1g = xc.min() - pad;  x2g = xc.max() + pad
+    y1g = yc.min() - pad;  y2g = yc.max() + pad
 
     x_arr = np.linspace(x1g, x2g, grid_res)
     y_arr = np.linspace(y1g, y2g, grid_res)
@@ -119,38 +129,24 @@ def compute_flow_field(coords_tuple, alpha_deg, n_streamlines=22, grid_res=220):
 
     Xf = Xg.ravel(); Yf = Yg.ravel()
     for j in range(N):
-        u_ind, v_ind = vortex_vel(Xf, Yf, xp[j], yp[j], xp[j+1], yp[j+1])
-        Ug.ravel()[:] += gamma_a[j] * u_ind
-        Vg.ravel()[:] += gamma_a[j] * v_ind
+        ug, vg = vortex_vel(Xf, Yf, xp[j], yp[j], xp[j+1], yp[j+1])
+        Ug.ravel()[:] += gamma_a[j] * ug
+        Vg.ravel()[:] += gamma_a[j] * vg
 
-    raw_speed = np.hypot(Ug, Vg)
-
-    # ── 6. Blended speed grid ─────────────────────────────────────────────
-    # Blend surface tangential speed into the off-body field within 0.30c.
-    # Hard cutoff at 0.30c prevents far-field contamination from slow panels.
-    pts_flat = np.c_[Xf, Yf]
-    panel_pts = np.c_[xm, ym]
-    diff = pts_flat[:, None, :] - panel_pts[None, :, :]
-    dist2 = (diff**2).sum(axis=2)
-    nearest_idx = np.argmin(dist2, axis=1)
-    dist_flat = np.sqrt(dist2[np.arange(len(Xf)), nearest_idx])
-    surface_spd_flat = Vt_surface[nearest_idx]
-
-    blend_radius = chord * 0.30
-    blend_flat = np.where(
-        dist_flat < blend_radius,
-        np.exp(-dist_flat / (chord * 0.15)),
-        0.0
-    )
-    blended_flat = blend_flat * surface_spd_flat + (1.0 - blend_flat) * raw_speed.ravel()
-    speed_grid = blended_flat.reshape(grid_res, grid_res)
-
-    # Interior: 0.0 (dark blue). No NaN — avoids Plotly heatmap artefacts.
+    # ── 6. Interior mask + speed grid ─────────────────────────────────────
     pts_xy = np.c_[Xg.ravel(), Yg.ravel()]
     inside = airfoil_path.contains_points(pts_xy, radius=-1e-4).reshape(grid_res, grid_res)
-    speed_grid[inside] = 0.0
-    Ug[inside] = np.nan
-    Vg[inside] = np.nan
+
+    speed = np.hypot(Ug, Vg)
+    outside_vals = speed[~inside]
+    # Use 99.99th percentile — 99.9 was too aggressive and clipped real
+    # near-surface velocity peaks, washing out the suction peak colours.
+    p999 = float(np.percentile(outside_vals, 99.99))
+    speed = np.clip(speed, 0.0, p999)
+    speed[inside] = 0.0
+    Ug[inside]    = np.nan
+    Vg[inside]    = np.nan
+    speed_grid    = speed
 
     # ── 7. Streamline tracer ──────────────────────────────────────────────
     def field_velocity(cx, cy):
@@ -211,7 +207,7 @@ def render_heatmap_png(speed_grid_tuple, x_arr_tuple, y_arr_tuple, coords_tuple,
 
     U0 = 1.0
     s_min = 0.0
-    s_max = U0 * 2.2
+    s_max = U0 * 2.0   # fixed scale — enables cross-airfoil comparison
 
     cmap_colors = [
         (0.00, "#1d4ed8"),
@@ -228,8 +224,8 @@ def render_heatmap_png(speed_grid_tuple, x_arr_tuple, y_arr_tuple, coords_tuple,
 
     fig_w = plot_xmax - plot_xmin
     fig_h = plot_ymax - plot_ymin
-    dpi = 180          # higher DPI for sharpness
-    px_w = 1100        # wider render for more detail
+    dpi = 180
+    px_w = 1100
     px_h = int(px_w * fig_h / fig_w)
 
     fig, ax = plt.subplots(figsize=(px_w/dpi, px_h/dpi), dpi=dpi)
@@ -238,17 +234,15 @@ def render_heatmap_png(speed_grid_tuple, x_arr_tuple, y_arr_tuple, coords_tuple,
 
     norm_grid = np.clip((speed_grid - s_min) / (s_max - s_min), 0, 1)
 
-    # bicubic interpolation — smooth colour field, no blocky artefacts
     ax.imshow(
         norm_grid,
         origin="lower",
         extent=[x_arr[0], x_arr[-1], y_arr[0], y_arr[-1]],
         cmap=cmap, vmin=0, vmax=1,
         aspect="auto",
-        interpolation="bicubic"   # key upgrade from bilinear
+        interpolation="bicubic"
     )
 
-    # Airfoil fill
     airfoil_patch = Polygon(
         coords, closed=True,
         facecolor="#0f172a", edgecolor="#a5b4fc",
@@ -270,7 +264,45 @@ def render_heatmap_png(speed_grid_tuple, x_arr_tuple, y_arr_tuple, coords_tuple,
     return f"data:image/png;base64,{b64}"
 
 
-def build_flow_animation(sl_x, sl_y, speed_grid, x_arr, y_arr, coords, alpha_deg, show_particles=True, show_streamlines=True):
+def build_bl_overlay(coords, bl_data):
+    import numpy as np
+    coords_arr = np.array(coords)
+    centroid_x = coords_arr[:, 0].mean()
+    centroid_y = coords_arr[:, 1].mean()
+
+    def offset_surface(rows, side):
+        if len(rows) < 2:
+            return [], []
+        xs = np.array([r["x"] for r in rows])
+        ys = np.array([r["y"] for r in rows])
+        ds = np.array([r["dstar"] for r in rows])
+        tx = np.gradient(xs)
+        ty = np.gradient(ys)
+        mag = np.hypot(tx, ty) + 1e-12
+        tx /= mag; ty /= mag
+        nx = -ty if side == "upper" else ty
+        ny =  tx if side == "upper" else -tx
+        for i in range(len(xs)):
+            if (nx[i]*(xs[i]-centroid_x) + ny[i]*(ys[i]-centroid_y)) < 0:
+                nx[i] = -nx[i]; ny[i] = -ny[i]
+        return (xs + ds*nx).tolist(), (ys + ds*ny).tolist()
+
+    def surface_point_at_x(rows, x_tr):
+        if x_tr is None:
+            return None
+        xs = [r["x"] for r in rows]
+        ys = [r["y"] for r in rows]
+        idx = min(range(len(xs)), key=lambda i: abs(xs[i] - x_tr))
+        return {"x": xs[idx], "y": ys[idx]}
+
+    ux, uy = offset_surface(bl_data["upper"], "upper")
+    lx, ly = offset_surface(bl_data["lower"], "lower")
+    tr_u = surface_point_at_x(bl_data["upper"], bl_data.get("transition_upper_x"))
+    tr_l = surface_point_at_x(bl_data["lower"], bl_data.get("transition_lower_x"))
+    return {"x": ux, "y": uy}, {"x": lx, "y": ly}, tr_u, tr_l
+
+
+def build_flow_animation(sl_x, sl_y, speed_grid, x_arr, y_arr, coords, alpha_deg, show_particles=True, show_streamlines=True, bl_overlay=None, show_bl=True):
     """
     layout.images[0] : permanent PNG background (heatmap + airfoil fill)
     Trace 0 : streamlines (static)
@@ -281,15 +313,11 @@ def build_flow_animation(sl_x, sl_y, speed_grid, x_arr, y_arr, coords, alpha_deg
     airfoil_x = [p[0] for p in coords] + [coords[0][0]]
     airfoil_y = [p[1] for p in coords] + [coords[0][1]]
 
-    # Axis range shown in Plotly
     plot_xmin = min(airfoil_x) - 0.4
     plot_xmax = max(airfoil_x) + 0.4
     plot_ymin = min(airfoil_y) - 0.55
     plot_ymax = max(airfoil_y) + 0.55
 
-    # PNG render bounds: extend well beyond axis range so the image fully
-    # covers the plot area with no dark gaps at the edges.
-    # layout.images are anchored to data coordinates so this is exact.
     xpad = (plot_xmax - plot_xmin) * 0.08
     ypad = (plot_ymax - plot_ymin) * 0.08
     img_xmin = plot_xmin - xpad
@@ -307,7 +335,6 @@ def build_flow_animation(sl_x, sl_y, speed_grid, x_arr, y_arr, coords, alpha_deg
 
     n_frames = 50
 
-    # ── Trace 0: Streamlines ──────────────────────────────────────────────
     all_sx, all_sy = [], []
     for sx, sy in zip(sl_x, sl_y):
         n = min(len(sx), len(sy))
@@ -322,7 +349,6 @@ def build_flow_animation(sl_x, sl_y, speed_grid, x_arr, y_arr, coords, alpha_deg
         visible=show_streamlines,
     )
 
-    # ── Trace 1: Airfoil outline ──────────────────────────────────────────
     trace_airfoil = go.Scatter(
         x=airfoil_x, y=airfoil_y,
         mode="lines",
@@ -332,7 +358,40 @@ def build_flow_animation(sl_x, sl_y, speed_grid, x_arr, y_arr, coords, alpha_deg
         hoverinfo="skip", showlegend=False
     )
 
-    # ── Arc-length particle placement ─────────────────────────────────────
+    bl_traces = []
+    if bl_overlay is not None and show_bl:
+        upper_env, lower_env, tr_upper, tr_lower = bl_overlay
+        bl_traces.append(go.Scatter(
+            x=upper_env["x"], y=upper_env["y"], mode="lines",
+            line=dict(color="rgba(251,191,36,0.9)", width=1.5, dash="dash"),
+            hoverinfo="skip", showlegend=False,
+        ))
+        bl_traces.append(go.Scatter(
+            x=lower_env["x"], y=lower_env["y"], mode="lines",
+            line=dict(color="rgba(251,191,36,0.9)", width=1.5, dash="dash"),
+            hoverinfo="skip", showlegend=False,
+        ))
+        if tr_upper is not None:
+            bl_traces.append(go.Scatter(
+                x=[tr_upper["x"]], y=[tr_upper["y"]], mode="markers+text",
+                marker=dict(symbol="triangle-up", size=10, color="rgba(251,191,36,1.0)",
+                            line=dict(color="white", width=1)),
+                text=["T"], textposition="top center",
+                textfont=dict(color="rgba(251,191,36,1.0)", size=10),
+                hovertemplate=f"Upper transition x/c={tr_upper['x']:.3f}<extra></extra>",
+                showlegend=False,
+            ))
+        if tr_lower is not None:
+            bl_traces.append(go.Scatter(
+                x=[tr_lower["x"]], y=[tr_lower["y"]], mode="markers+text",
+                marker=dict(symbol="triangle-down", size=10, color="rgba(251,191,36,1.0)",
+                            line=dict(color="white", width=1)),
+                text=["T"], textposition="bottom center",
+                textfont=dict(color="rgba(251,191,36,1.0)", size=10),
+                hovertemplate=f"Lower transition x/c={tr_lower['x']:.3f}<extra></extra>",
+                showlegend=False,
+            ))
+
     sl_arc = []
     for sx, sy in zip(sl_x, sl_y):
         n = min(len(sx), len(sy))
@@ -367,7 +426,7 @@ def build_flow_animation(sl_x, sl_y, speed_grid, x_arr, y_arr, coords, alpha_deg
                 fdy.append(sy[idx])
         frame_dots.append((fdx, fdy))
 
-    # ── Trace 2: Particles ────────────────────────────────────────────────
+    particle_idx = 2 + len(bl_traces)
     dx0, dy0 = frame_dots[0]
     trace_particles = go.Scatter(
         x=dx0, y=dy0,
@@ -377,7 +436,6 @@ def build_flow_animation(sl_x, sl_y, speed_grid, x_arr, y_arr, coords, alpha_deg
         visible=show_particles,
     )
 
-    # ── Trace 3: Invisible colorbar ───────────────────────────────────────
     colorscale_for_bar = [
         [0.00, "#1d4ed8"], [0.20, "#2563eb"], [0.45, "#06b6d4"],
         [0.65, "#22c55e"], [0.80, "#facc15"], [0.92, "#f97316"], [1.00, "#ef4444"],
@@ -392,8 +450,8 @@ def build_flow_animation(sl_x, sl_y, speed_grid, x_arr, y_arr, coords, alpha_deg
             showscale=True,
             colorbar=dict(
                 title=dict(text="V / V∞", font=dict(color="white", size=12)),
-                tickvals=[0, 0.45, 0.65, 0.80, 1.0],
-                ticktext=["0", "1.0×", "1.4×", "1.8×", "2.2×"],
+                tickvals=[0, 0.25, 0.50, 0.75, 1.0],
+                ticktext=["0", "0.5×", "1.0×", "1.5×", "2.0×"],
                 tickfont=dict(color="white"),
                 thickness=12, len=0.6, x=1.02,
             )
@@ -401,7 +459,6 @@ def build_flow_animation(sl_x, sl_y, speed_grid, x_arr, y_arr, coords, alpha_deg
         hoverinfo="skip", showlegend=False
     )
 
-    # ── Frames: only update trace 2 (particles) ───────────────────────────
     frames = []
     for f in range(n_frames):
         fdx, fdy = frame_dots[f]
@@ -411,12 +468,12 @@ def build_flow_animation(sl_x, sl_y, speed_grid, x_arr, y_arr, coords, alpha_deg
                 mode="markers",
                 marker=dict(size=5, color="white", opacity=0.9, line=dict(width=0))
             )],
-            traces=[2],
+            traces=[particle_idx],
             name=str(f)
         ))
 
     fig = go.Figure(
-        data=[trace_lines, trace_airfoil, trace_particles, trace_colorbar],
+        data=[trace_lines, trace_airfoil] + bl_traces + [trace_particles, trace_colorbar],
         frames=frames,
         layout=go.Layout(
             title=dict(
@@ -570,6 +627,8 @@ if 'show_particles' not in st.session_state:
     st.session_state.show_particles = True
 if 'show_streamlines' not in st.session_state:
     st.session_state.show_streamlines = True
+if 'show_bl' not in st.session_state:
+    st.session_state.show_bl = True
 
 @st.cache_data(ttl=3600, show_spinner=False, max_entries=50)
 def run_xfoil_analysis(file_content: bytes, filename: str, reynolds: float, alpha: float, backend_url: str):
@@ -730,7 +789,7 @@ with right_col:
                 if "rate-limited" in error_msg.lower() or "429" in error_msg:
                     st.info("💡 **Tip:** Free tier has rate limits. Wait 60 seconds before trying again.")
 
-    # ── Results ───────────────────────────────────────────────────────────
+    # ── Results ───────────────────────────────────────────────────────────────
     if st.session_state.results is not None:
         result = st.session_state.results
         last_params = st.session_state.last_params
@@ -852,28 +911,40 @@ with right_col:
                 mime="text/csv"
             )
 
-        # ── Airflow Visualization ─────────────────────────────────────────
+        # ── Airflow Visualization ─────────────────────────────────────────────
         st.markdown("---")
         st.subheader("🌊 Airflow Visualization")
 
         st.caption("Speed heatmap with animated flow particles. Press ▶ Play to animate. Use the camera icon to save PNG.")
+        has_bl = result.get("bl_data") is not None
+
         try:
             with st.spinner("Computing flow field... (higher resolution may take ~60s on first run)"):
                 sl_x, sl_y, speed_grid, x_arr, y_arr, coords_list = compute_flow_field(
                     tuple(map(tuple, result["coords_after"])),
                     last_params['alpha']
                 )
+
+            bl_overlay = None
+            if has_bl:
+                try:
+                    bl_overlay = build_bl_overlay(result["coords_after"], result["bl_data"])
+                except Exception as bl_err:
+                    st.warning(f"BL overlay failed: {bl_err}")
+
             flow_fig = build_flow_animation(
                 sl_x, sl_y, speed_grid, x_arr, y_arr, coords_list, last_params['alpha'],
                 show_particles=st.session_state.show_particles,
                 show_streamlines=st.session_state.show_streamlines,
+                bl_overlay=bl_overlay,
+                show_bl=st.session_state.show_bl,
             )
             st.plotly_chart(flow_fig, use_container_width=True)
         except Exception as e:
             st.error(f"⚠️ Visualization error: {e}")
 
-        # ── Checkboxes below graph ────────────────────────────────────────
-        cb_col1, cb_col2, _ = st.columns([1, 1, 4])
+        # ── Checkboxes below graph ────────────────────────────────────────────
+        cb_col1, cb_col2, cb_col3, _ = st.columns([1, 1, 1, 2])
         with cb_col1:
             new_p = st.checkbox("Show Dot Particles", value=st.session_state.show_particles, key="cb_particles")
             if new_p != st.session_state.show_particles:
@@ -884,6 +955,13 @@ with right_col:
             if new_s != st.session_state.show_streamlines:
                 st.session_state.show_streamlines = new_s
                 st.rerun()
+        with cb_col3:
+            bl_label = "Show BL Envelope" if has_bl else "Show BL Envelope (needs viscous)"
+            new_bl = st.checkbox(bl_label, value=st.session_state.show_bl,
+                                 key="cb_bl", disabled=not has_bl)
+            if new_bl != st.session_state.show_bl:
+                st.session_state.show_bl = new_bl
+                st.rerun()
 
         with st.expander("ℹ️ About This Visualization"):
             st.markdown("""
@@ -891,10 +969,11 @@ with right_col:
             - **Colour field** — speed at every point: blue = slow (high pressure), red = fast (low pressure)
             - **White lines** — streamlines showing flow direction
             - **White dots** — animated fluid particles; they move faster where flow is faster
+            - **Amber dashed line** — displacement thickness δ* envelope from XFOIL viscous BL data
+            - **▲T / ▼T markers** — laminar→turbulent transition locations on upper/lower surface
 
-            *Inviscid potential flow — does not model stall or boundary layer separation.*
+            *Outer flow: inviscid potential flow. BL envelope + transition: XFOIL viscous solution.*
             """)
-        # ─────────────────────────────────────────────────────────────────
 
     elif uploaded_file is not None:
         st.info("⚙️ Parameters set. Click 'Run Analysis' to start simulation.")
