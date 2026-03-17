@@ -380,7 +380,7 @@ def _run_xfoil_mode(
         f.write("\n".join(script_lines))
 
     mode = "VISCOUS" if viscous else "INVISCID"
-    print(f"\n{"="*70}")
+    print("\n" + "="*70)
     print(f"XFOIL SCRIPT ({mode}{"+ SMOOTH" if smooth_geometry else ""})")
     print(f"{"="*70}")
     for i, line in enumerate(script_lines):
