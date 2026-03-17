@@ -101,10 +101,10 @@ def detect_and_merge_sections(data_lines):
             if le_idx + 1 < len(data_lines):
                 point_after_le_y = data_lines[le_idx + 1][1]
                 if point_after_le_y < 0:
-                    print(f"DEBUG: TE-to-TE format, correct order (upper->LE->lower)")
+                    print("DEBUG: TE-to-TE format, correct order (upper->LE->lower)")
                     merged = data_lines
                 else:
-                    print(f"DEBUG: TE-to-TE format, reversing (was lower->LE->upper)")
+                    print("DEBUG: TE-to-TE format, reversing (was lower->LE->upper)")
                     merged = list(reversed(data_lines))
             else:
                 merged = data_lines
@@ -112,7 +112,7 @@ def detect_and_merge_sections(data_lines):
             merged = data_lines
     if len(merged) > 1 and abs(merged[0][0] - merged[-1][0]) < 0.001 and abs(merged[0][1] - merged[-1][1]) < 0.001:
         merged = merged[:-1]
-        print(f"DEBUG: Removed duplicate TE")
+        print("DEBUG: Removed duplicate TE")
     return merged
 
 
@@ -143,13 +143,6 @@ def parse_bl_dump(bl_file_path: str):
         Section 1 (before first blank line) : upper surface (TE to LE)
         Section 2 (after blank line)        : lower surface (LE to TE)
 
-    Returns:
-        {
-            upper              : list of {x, y, dstar, theta, cf, H},
-            lower              : list of {x, y, dstar, theta, cf, H},
-            transition_upper_x : float or None,
-            transition_lower_x : float or None,
-        }
     Returns None if file is missing or cannot be parsed.
     """
     if not os.path.exists(bl_file_path):
@@ -163,26 +156,19 @@ def parse_bl_dump(bl_file_path: str):
         with open(bl_file_path, "r") as f:
             for line in f:
                 stripped = line.strip()
-
-                # Blank line = section separator
                 if not stripped:
                     if current_block:
                         sections.append(current_block)
                         current_block = []
                     continue
-
                 parts = stripped.split()
                 if len(parts) < 7:
-                    continue   # skip header lines and short rows
-
+                    continue
                 try:
                     vals = [float(p) for p in parts[:7]]
                 except ValueError:
-                    continue   # skip non-numeric lines
-
-                # Column indices: 0=s, 1=x, 2=y, 3=Ue/Vinf, 4=Dstar, 5=Theta, 6=Cf
+                    continue
                 H = float(parts[7]) if len(parts) >= 8 else None
-
                 current_block.append({
                     "x":     vals[1],
                     "y":     vals[2],
@@ -205,11 +191,6 @@ def parse_bl_dump(bl_file_path: str):
         print(f"BL parse: {len(upper_rows)} upper pts, {len(lower_rows)} lower pts")
 
         def find_transition_x(rows):
-            """
-            Detect laminar-to-turbulent transition by finding where Cf
-            first jumps sharply (ratio > 2.5 over consecutive points).
-            This is robust against leading-edge inviscid spikes.
-            """
             if len(rows) < 4:
                 return None
             for i in range(1, len(rows) - 1):
@@ -271,10 +252,11 @@ def run_xfoil_sync(coords_file: str, reynolds: float, alpha: float, work_dir: st
             raise
 
     # Strategy 3: Inviscid fallback (no BL data)
-    print("=" * 70)
+    sep = "=" * 70
+    print(sep)
     print("WARNING: FALLING BACK TO INVISCID MODE")
     print("BL data will NOT be available in inviscid mode")
-    print("=" * 70)
+    print(sep)
     try:
         return _run_xfoil_mode(coords_filename, cp_filename, bl_filename, work_dir,
                                reynolds, alpha, viscous=False, timeout=20, smooth_geometry=False)
@@ -293,55 +275,11 @@ def _run_xfoil_mode(
     timeout:         int,
     smooth_geometry: bool = False,
 ):
-    """
-    Linux-optimized XFOIL execution.
-
-    XFOIL script — viscous, no smoothing:
-    ───────────────────────────────────────────────
-    LOAD airfoil.dat      load geometry
-    PANE                  re-panel with default distribution
-    OPER                  enter OPER menu
-    VISC <Re>             enable viscous mode
-    ITER 500              max Newton iterations
-    ALFA <alpha>          solve at angle of attack
-    CPWR cp_output.txt    write Cp output file
-    DUMP bl_output.txt    write boundary layer dump (viscous only)
-                          blank line — exits OPER menu (required)
-    QUIT
-
-    XFOIL script — viscous, with smoothing:
-    ───────────────────────────────────────────────
-    LOAD airfoil.dat
-    PANE
-    GDES                  enter geometry design menu
-    SMOO                  smooth geometry
-                          blank line — exits GDES menu
-    OPER
-    VISC <Re>
-    ITER 500
-    ALFA <alpha>
-    CPWR cp_output.txt
-    DUMP bl_output.txt
-                          blank line — exits OPER menu
-    QUIT
-
-    XFOIL script — inviscid fallback:
-    ───────────────────────────────────────────────
-    LOAD airfoil.dat
-    PANE
-    OPER
-    ALFA <alpha>
-    CPWR cp_output.txt
-                          blank line — exits OPER menu
-    QUIT
-    """
-
     cp_out_path = os.path.abspath(os.path.join(work_dir, cp_filename))
     bl_out_path = os.path.abspath(os.path.join(work_dir, bl_filename))
     script_path = os.path.abspath(os.path.join(work_dir, "xfoil_script.txt"))
     log_path    = os.path.abspath(os.path.join(work_dir, "xfoil_output.log"))
 
-    # Remove stale output files
     for path in [cp_out_path, bl_out_path, log_path]:
         if os.path.exists(path):
             try:
@@ -349,43 +287,43 @@ def _run_xfoil_mode(
             except Exception:
                 pass
 
-    # ── BUILD XFOIL SCRIPT ────────────────────────────────────────────────
     script_lines = []
-
-    script_lines.append(f"LOAD {coords_filename}")  # load geometry
-    script_lines.append("PANE")                      # re-panel
+    script_lines.append(f"LOAD {coords_filename}")
+    script_lines.append("PANE")
 
     if smooth_geometry:
-        script_lines.append("GDES")                  # enter geometry design menu
-        script_lines.append("SMOO")                  # smooth
-        script_lines.append("")                      # exit GDES menu
+        script_lines.append("GDES")
+        script_lines.append("SMOO")
+        script_lines.append("")
 
-    script_lines.append("OPER")                      # enter OPER menu
-
-    if viscous:
-        script_lines.append(f"VISC {int(reynolds)}") # enable viscous
-        script_lines.append("ITER 500")              # iteration limit
-
-    script_lines.append(f"ALFA {alpha}")             # solve at AoA
-    script_lines.append(f"CPWR {cp_filename}")       # write Cp file
+    script_lines.append("OPER")
 
     if viscous:
-        script_lines.append(f"DUMP {bl_filename}")   # write BL dump (viscous only)
+        script_lines.append(f"VISC {int(reynolds)}")
+        script_lines.append("ITER 500")
 
-    script_lines.append("")                          # exit OPER menu (required blank line)
-    script_lines.append("QUIT")                     # exit XFOIL
+    script_lines.append(f"ALFA {alpha}")
+    script_lines.append(f"CPWR {cp_filename}")
 
-    # Write with strict Unix line endings
+    if viscous:
+        script_lines.append(f"DUMP {bl_filename}")
+
+    script_lines.append("")
+    script_lines.append("QUIT")
+
     with open(script_path, "w", newline="\n") as f:
         f.write("\n".join(script_lines))
 
+    # Fixed f-strings: extract expressions to variables first
     mode = "VISCOUS" if viscous else "INVISCID"
-    print("\n" + "="*70)
-    print(f"XFOIL SCRIPT ({mode}{"+ SMOOTH" if smooth_geometry else ""})")
-    print(f"{"="*70}")
+    smooth_str = "+ SMOOTH" if smooth_geometry else ""
+    sep70 = "=" * 70
+    print("\n" + sep70)
+    print(f"XFOIL SCRIPT ({mode}{smooth_str})")
+    print(sep70)
     for i, line in enumerate(script_lines):
         print(f"  {i+1:2d}: {repr(line)}")
-    print(f"{"="*70}\n")
+    print(sep70 + "\n")
 
     proc = None
     try:
@@ -422,16 +360,22 @@ def _run_xfoil_mode(
         panel_matches = re.findall(r"Number of panel nodes\s+(\d+)", stdout)
         if panel_matches:
             panel_count = int(panel_matches[-1])
-            print(f"Panel count: {panel_count}")
-            if panel_count < 140:
+            print(f"Detected: {panel_count} panels")
+            if panel_count >= 140:
+                print(f"Panel count is sufficient for accurate results")
+            else:
                 print(f"Warning: Low panel count ({panel_count})")
+        else:
+            print(f"Warning: Could not detect panel count")
+            print(f"   XFOIL may have crashed early")
 
         if viscous:
             visc_confirmed = any(ind in stdout for ind in ["Re =", "VISCAL", "Cm ="])
             if visc_confirmed and ("CDp" in stdout or "CD =" in stdout):
                 print("Viscous mode confirmed")
             else:
-                print("WARNING: Viscous mode may not have converged")
+                print("WARNING: Viscous mode requested but may not have converged")
+                print("   Results may be inviscid or unconverged")
 
         convergence_failed = (
             "VISCAL:  Convergence failed" in stdout or
@@ -447,6 +391,19 @@ def _run_xfoil_mode(
 
         coefficients = extract_aerodynamic_coefficients(stdout)
         if not coefficients or "CL" not in coefficients:
+            print(f"ERROR: No coefficients extracted from XFOIL output")
+            print(f"\nChecking if ALFA {alpha} was processed:")
+            alpha_patterns = [
+                f"alfa = {alpha:.3f}",
+                f"ALFA   {alpha:.2f}",
+                f"a = {alpha:.2f}",
+            ]
+            found_alpha = any(pattern.lower() in stdout.lower() for pattern in alpha_patterns)
+            if found_alpha:
+                print(f"  Alpha command was processed")
+            else:
+                print(f"  WARNING: Could not verify alpha={alpha} was calculated!")
+                print(f"  This suggests XFOIL may have used cached/stale results")
             raise Exception(f"No valid aerodynamic coefficients found for alpha={alpha}")
 
         cp_x, cp_values = [], []
@@ -546,7 +503,9 @@ async def upload_airfoil(
     raw_path = os.path.join(work_dir, "raw.dat")
     fix_path = os.path.join(work_dir, "airfoil_fixed.dat")
 
-    print(f"\n{"="*60}\nNEW REQUEST: {file.filename}\nPlatform: {platform.system()}\n{"="*60}")
+    # Fixed f-string: was print(f"\n{"="*60}\n...")
+    sep60 = "=" * 60
+    print(f"\n{sep60}\nNEW REQUEST: {file.filename}\nPlatform: {platform.system()}\n{sep60}")
 
     try:
         content = await file.read()
