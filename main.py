@@ -89,22 +89,33 @@ def detect_and_merge_sections(data_lines):
         upper = data_lines[:section_break]
         lower = data_lines[section_break:]
         print(f"DEBUG: Lednicer format: {len(upper)} upper, {len(lower)} lower")
-        if upper[0][0] < upper[-1][0]:
-            upper = list(reversed(upper))
+        # Ensure upper goes LE->TE first, then reverse to TE->LE for XFOIL
+        if upper[0][0] > upper[-1][0]:
+            upper = list(reversed(upper))   # was TE->LE, make LE->TE
+        upper = list(reversed(upper))       # now TE->LE (XFOIL winding order)
+        # Ensure lower goes LE->TE
         if lower[0][0] > lower[-1][0]:
             lower = list(reversed(lower))
+        # Both sections share the LE point (0,0) — remove duplicate from lower
+        if lower and abs(lower[0][0]) < 0.001 and abs(lower[0][1]) < 0.001:
+            lower = lower[1:]
+            print("DEBUG: Removed duplicate LE point from Lednicer lower section")
         merged = upper + lower
     else:
         print(f"DEBUG: Single section: {len(data_lines)} points")
         if x_coords[0] > 0.99 and x_coords[-1] > 0.99:
             le_idx = x_coords.index(min(x_coords))
-            if le_idx + 1 < len(data_lines):
-                point_after_le_y = data_lines[le_idx + 1][1]
-                if point_after_le_y < 0:
-                    print("DEBUG: TE-to-TE format, correct order (upper->LE->lower)")
+            # In correct Selig order (TE -> upper -> LE -> lower -> TE),
+            # the point BEFORE the LE comes from the upper surface (positive y),
+            # and the point AFTER the LE is on the lower surface (negative y).
+            # So: point_before_le_y > 0 means correct order.
+            if le_idx > 0:
+                point_before_le_y = data_lines[le_idx - 1][1]
+                if point_before_le_y > 0:
+                    print("DEBUG: TE-to-TE format, correct order (TE->upper->LE->lower->TE)")
                     merged = data_lines
                 else:
-                    print("DEBUG: TE-to-TE format, reversing (was lower->LE->upper)")
+                    print("DEBUG: TE-to-TE format, reversing (was TE->lower->LE->upper->TE)")
                     merged = list(reversed(data_lines))
             else:
                 merged = data_lines
@@ -233,10 +244,10 @@ def run_xfoil_sync(coords_file: str, reynolds: float, alpha: float, work_dir: st
     except subprocess.TimeoutExpired:
         print("ERROR: Viscous mode timed out after 90s")
     except Exception as e:
-        if "convergence" in str(e).lower() or "no pressure data" in str(e).lower():
-            print(f"Convergence issue: {e}")
-        else:
-            raise
+        # Catch ALL xfoil solver failures so we always fall through to next strategy.
+        # Previously only caught "convergence"/"no pressure data" — but "No valid
+        # aerodynamic coefficients found" was re-raised, skipping strategies 2 & 3.
+        print(f"Strategy 1 failed: {e}")
 
     # Strategy 2: Viscous, smoothed geometry
     try:
@@ -246,10 +257,7 @@ def run_xfoil_sync(coords_file: str, reynolds: float, alpha: float, work_dir: st
     except subprocess.TimeoutExpired:
         print("ERROR: Viscous mode with smoothing timed out")
     except Exception as e:
-        if "convergence" in str(e).lower() or "no pressure data" in str(e).lower():
-            print(f"Smoothed geometry also failed: {e}")
-        else:
-            raise
+        print(f"Strategy 2 failed: {e}")
 
     # Strategy 3: Inviscid fallback (no BL data)
     sep = "=" * 70
