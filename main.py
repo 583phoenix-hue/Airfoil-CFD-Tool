@@ -13,6 +13,15 @@ from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
 from anyio import to_thread
 
+import logging
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S",
+)
+logger = logging.getLogger(__name__)
+
 limiter = Limiter(key_func=get_remote_address)
 app = FastAPI(title="Student Airfoil CFD Tool")
 app.state.limiter = limiter
@@ -88,7 +97,7 @@ def detect_and_merge_sections(data_lines):
     if section_break is not None:
         upper = data_lines[:section_break]
         lower = data_lines[section_break:]
-        print(f"DEBUG: Lednicer format: {len(upper)} upper, {len(lower)} lower")
+        logger.debug(f"Lednicer format: {len(upper)} upper, {len(lower)} lower")
         # Ensure upper goes LE->TE first, then reverse to TE->LE for XFOIL
         if upper[0][0] > upper[-1][0]:
             upper = list(reversed(upper))   # was TE->LE, make LE->TE
@@ -99,10 +108,10 @@ def detect_and_merge_sections(data_lines):
         # Both sections share the LE point (0,0) — remove duplicate from lower
         if lower and abs(lower[0][0]) < 0.001 and abs(lower[0][1]) < 0.001:
             lower = lower[1:]
-            print("DEBUG: Removed duplicate LE point from Lednicer lower section")
+            logger.debug("Removed duplicate LE point from Lednicer lower section")
         merged = upper + lower
     else:
-        print(f"DEBUG: Single section: {len(data_lines)} points")
+        logger.debug(f"Single section: {len(data_lines)} points")
         if x_coords[0] > 0.99 and x_coords[-1] > 0.99:
             le_idx = x_coords.index(min(x_coords))
             # In correct Selig order (TE -> upper -> LE -> lower -> TE),
@@ -112,10 +121,10 @@ def detect_and_merge_sections(data_lines):
             if le_idx > 0:
                 point_before_le_y = data_lines[le_idx - 1][1]
                 if point_before_le_y > 0:
-                    print("DEBUG: TE-to-TE format, correct order (TE->upper->LE->lower->TE)")
+                    logger.debug("TE-to-TE format, correct order (TE->upper->LE->lower->TE)")
                     merged = data_lines
                 else:
-                    print("DEBUG: TE-to-TE format, reversing (was TE->lower->LE->upper->TE)")
+                    logger.debug("TE-to-TE format, reversing (was TE->lower->LE->upper->TE)")
                     merged = list(reversed(data_lines))
             else:
                 merged = data_lines
@@ -123,7 +132,7 @@ def detect_and_merge_sections(data_lines):
             merged = data_lines
     if len(merged) > 1 and abs(merged[0][0] - merged[-1][0]) < 0.001 and abs(merged[0][1] - merged[-1][1]) < 0.001:
         merged = merged[:-1]
-        print("DEBUG: Removed duplicate TE")
+        logger.debug("Removed duplicate TE")
     return merged
 
 
@@ -157,7 +166,7 @@ def parse_bl_dump(bl_file_path: str):
     Returns None if file is missing or cannot be parsed.
     """
     if not os.path.exists(bl_file_path):
-        print(f"BL dump file not found: {bl_file_path}")
+        logger.info(f"BL dump file not found: {bl_file_path}")
         return None
 
     sections      = []
@@ -193,13 +202,13 @@ def parse_bl_dump(bl_file_path: str):
             sections.append(current_block)
 
         if not sections:
-            print("BL parse: no sections found in dump file")
+            logger.info("BL parse: no sections found in dump file")
             return None
 
         upper_rows = sections[0] if len(sections) > 0 else []
         lower_rows = sections[1] if len(sections) > 1 else []
 
-        print(f"BL parse: {len(upper_rows)} upper pts, {len(lower_rows)} lower pts")
+        logger.info(f"BL parse: {len(upper_rows)} upper pts, {len(lower_rows)} lower pts")
 
         def find_transition_x(rows):
             if len(rows) < 4:
@@ -214,7 +223,7 @@ def parse_bl_dump(bl_file_path: str):
         tr_upper = find_transition_x(upper_rows)
         tr_lower = find_transition_x(lower_rows)
 
-        print(f"BL parse: transition upper x={tr_upper}, lower x={tr_lower}")
+        logger.info(f"BL parse: transition upper x={tr_upper}, lower x={tr_lower}")
 
         return {
             "upper":              upper_rows,
@@ -224,7 +233,7 @@ def parse_bl_dump(bl_file_path: str):
         }
 
     except Exception as e:
-        print(f"BL parse error: {e}")
+        logger.info(f"BL parse error: {e}")
         return None
 
 
@@ -238,33 +247,33 @@ def run_xfoil_sync(coords_file: str, reynolds: float, alpha: float, work_dir: st
 
     # Strategy 1: Viscous, clean geometry
     try:
-        print("Attempt 1: VISCOUS mode, clean geometry...")
+        logger.info("Attempt 1: VISCOUS mode, clean geometry...")
         return _run_xfoil_mode(coords_filename, cp_filename, bl_filename, work_dir,
                                reynolds, alpha, viscous=True, timeout=90, smooth_geometry=False)
     except subprocess.TimeoutExpired:
-        print("ERROR: Viscous mode timed out after 90s")
+        logger.error("Viscous mode timed out after 90s")
     except Exception as e:
         # Catch ALL xfoil solver failures so we always fall through to next strategy.
         # Previously only caught "convergence"/"no pressure data" — but "No valid
         # aerodynamic coefficients found" was re-raised, skipping strategies 2 & 3.
-        print(f"Strategy 1 failed: {e}")
+        logger.info(f"Strategy 1 failed: {e}")
 
     # Strategy 2: Viscous, smoothed geometry
     try:
-        print("Attempt 2: VISCOUS mode, smoothed geometry...")
+        logger.info("Attempt 2: VISCOUS mode, smoothed geometry...")
         return _run_xfoil_mode(coords_filename, cp_filename, bl_filename, work_dir,
                                reynolds, alpha, viscous=True, timeout=90, smooth_geometry=True)
     except subprocess.TimeoutExpired:
-        print("ERROR: Viscous mode with smoothing timed out")
+        logger.error("Viscous mode with smoothing timed out")
     except Exception as e:
-        print(f"Strategy 2 failed: {e}")
+        logger.info(f"Strategy 2 failed: {e}")
 
     # Strategy 3: Inviscid fallback (no BL data)
     sep = "=" * 70
-    print(sep)
-    print("WARNING: FALLING BACK TO INVISCID MODE")
-    print("BL data will NOT be available in inviscid mode")
-    print(sep)
+    logger.info(sep)
+    logger.warning("FALLING BACK TO INVISCID MODE")
+    logger.info("BL data will NOT be available in inviscid mode")
+    logger.info(sep)
     try:
         return _run_xfoil_mode(coords_filename, cp_filename, bl_filename, work_dir,
                                reynolds, alpha, viscous=False, timeout=20, smooth_geometry=False)
@@ -326,12 +335,12 @@ def _run_xfoil_mode(
     mode = "VISCOUS" if viscous else "INVISCID"
     smooth_str = "+ SMOOTH" if smooth_geometry else ""
     sep70 = "=" * 70
-    print("\n" + sep70)
-    print(f"XFOIL SCRIPT ({mode}{smooth_str})")
-    print(sep70)
+    logger.info("\n" + sep70)
+    logger.info(f"XFOIL SCRIPT ({mode}{smooth_str})")
+    logger.info(sep70)
     for i, line in enumerate(script_lines):
-        print(f"  {i+1:2d}: {repr(line)}")
-    print(sep70 + "\n")
+        logger.info(f"  {i+1:2d}: {repr(line)}")
+    logger.info(sep70)
 
     proc = None
     try:
@@ -361,29 +370,29 @@ def _run_xfoil_mode(
             f.write("\n\nSTDERR\n" + "=" * 70 + "\n")
             f.write(stderr)
 
-        print(f"Return code: {proc.returncode}")
+        logger.info(f"Return code: {proc.returncode}")
         if proc.returncode != 0:
-            print(f"Warning: Non-zero exit code: {proc.returncode}")
+            logger.warning(f"Non-zero exit code: {proc.returncode}")
 
         panel_matches = re.findall(r"Number of panel nodes\s+(\d+)", stdout)
         if panel_matches:
             panel_count = int(panel_matches[-1])
-            print(f"Detected: {panel_count} panels")
+            logger.info(f"Detected: {panel_count} panels")
             if panel_count >= 140:
-                print(f"Panel count is sufficient for accurate results")
+                logger.info(f"Panel count is sufficient for accurate results")
             else:
-                print(f"Warning: Low panel count ({panel_count})")
+                logger.warning(f"Low panel count ({panel_count})")
         else:
-            print(f"Warning: Could not detect panel count")
-            print(f"   XFOIL may have crashed early")
+            logger.warning(f"Could not detect panel count")
+            logger.info(f"   XFOIL may have crashed early")
 
         if viscous:
             visc_confirmed = any(ind in stdout for ind in ["Re =", "VISCAL", "Cm ="])
             if visc_confirmed and ("CDp" in stdout or "CD =" in stdout):
-                print("Viscous mode confirmed")
+                logger.info("Viscous mode confirmed")
             else:
-                print("WARNING: Viscous mode requested but may not have converged")
-                print("   Results may be inviscid or unconverged")
+                logger.warning("Viscous mode requested but may not have converged")
+                logger.info("   Results may be inviscid or unconverged")
 
         convergence_failed = (
             "VISCAL:  Convergence failed" in stdout or
@@ -394,13 +403,13 @@ def _run_xfoil_mode(
             raise Exception(f"Viscous convergence failed at alpha={alpha}")
 
         if not os.path.exists(cp_out_path):
-            print(f"Last 800 chars: {stdout[-800:]}")
+            logger.info(f"Last 800 chars: {stdout[-800:]}")
             raise Exception(f"{mode} did not generate CP output file")
 
         coefficients = extract_aerodynamic_coefficients(stdout)
         if not coefficients or "CL" not in coefficients:
-            print(f"ERROR: No coefficients extracted from XFOIL output")
-            print(f"\nChecking if ALFA {alpha} was processed:")
+            logger.error(f"No coefficients extracted from XFOIL output")
+            logger.info(f"\nChecking if ALFA {alpha} was processed:")
             alpha_patterns = [
                 f"alfa = {alpha:.3f}",
                 f"ALFA   {alpha:.2f}",
@@ -408,10 +417,10 @@ def _run_xfoil_mode(
             ]
             found_alpha = any(pattern.lower() in stdout.lower() for pattern in alpha_patterns)
             if found_alpha:
-                print(f"  Alpha command was processed")
+                logger.info(f"  Alpha command was processed")
             else:
-                print(f"  WARNING: Could not verify alpha={alpha} was calculated!")
-                print(f"  This suggests XFOIL may have used cached/stale results")
+                logger.info(f"  WARNING: Could not verify alpha={alpha} was calculated!")
+                logger.info(f"  This suggests XFOIL may have used cached/stale results")
             raise Exception(f"No valid aerodynamic coefficients found for alpha={alpha}")
 
         cp_x, cp_values = [], []
@@ -435,18 +444,18 @@ def _run_xfoil_mode(
         if viscous:
             bl_data = parse_bl_dump(bl_out_path)
             status = f"upper={len(bl_data['upper'])}, lower={len(bl_data['lower'])}" if bl_data else "not available"
-            print(f"BL data: {status}")
+            logger.info(f"BL data: {status}")
 
         cl = coefficients.get("CL", 0)
         cd = coefficients.get("CD", 0.0001)
         ld = cl / cd if cd > 0 else 0
 
-        print(f"CL={cl:.4f}  CD={cd:.6f}  L/D={ld:.1f}  CP_pts={len(cp_x)}")
+        logger.info(f"CL={cl:.4f}  CD={cd:.6f}  L/D={ld:.1f}  CP_pts={len(cp_x)}")
 
         if cd < 0.005 and viscous and reynolds > 100000:
-            print(f"Warning: CD={cd:.6f} seems low (expected 0.007-0.012)")
+            logger.warning(f"CD={cd:.6f} seems low (expected 0.007-0.012)")
         if ld > 150:
-            print(f"Warning: L/D={ld:.0f} unusually high")
+            logger.warning(f"L/D={ld:.0f} unusually high")
 
         coefficients["mode"] = "viscous" if viscous else "inviscid"
         if not viscous:
@@ -511,9 +520,9 @@ async def upload_airfoil(
     raw_path = os.path.join(work_dir, "raw.dat")
     fix_path = os.path.join(work_dir, "airfoil_fixed.dat")
 
-    # Fixed f-string: was print(f"\n{"="*60}\n...")
+    # Fixed f-string: was logger.info(f"\n{"="*60}\n...")
     sep60 = "=" * 60
-    print(f"\n{sep60}\nNEW REQUEST: {file.filename}\nPlatform: {platform.system()}\n{sep60}")
+    logger.info(f"\n{sep60}\nNEW REQUEST: {file.filename}\nPlatform: {platform.system()}\n{sep60}")
 
     try:
         content = await file.read()
@@ -528,7 +537,7 @@ async def upload_airfoil(
         if len(raw_coords) > MAX_POINTS:
             raise HTTPException(status_code=400, detail=f"Too many points (max {MAX_POINTS})")
 
-        print(f"Parsed: {len(raw_coords)} points")
+        logger.info(f"Parsed: {len(raw_coords)} points")
 
         with open(fix_path, "w") as f:
             f.write("AIRFOIL\n")
@@ -563,7 +572,7 @@ async def upload_airfoil(
     except HTTPException:
         raise
     except Exception as e:
-        print(f"ERROR: {str(e)}")
+        logger.error(f"{str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
     finally:
         try:
