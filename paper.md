@@ -10,6 +10,7 @@ tags:
   - education
 authors:
   - name: Nathan Pranav
+    orcid: https://orcid.org/0009-0005-4120-635X
     affiliation: 1
 affiliations:
   - name: Independent Researcher
