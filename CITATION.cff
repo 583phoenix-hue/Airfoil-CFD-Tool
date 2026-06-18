@@ -9,5 +9,6 @@ repository-code: https://github.com/583phoenix-hue/Airfoil-CFD-Tool
 url: https://aerolab-app.onrender.com/
 license: AGPL-3.0
 version: v1.0.0
+doi: 10.5281/zenodo.20740325
 date-released: 2026-06-18
 abstract: "A free, browser-based aerodynamic analysis tool wrapping the XFOIL panel method solver, with a robust .dat coordinate file parser and independent potential flow visualisation."
