@@ -1,7 +1,7 @@
 # AeroLab — Web-Based Airfoil Aerodynamic Analysis Tool
 
 [![Live Demo](https://img.shields.io/badge/Live%20Demo-aerolab--app.onrender.com-blue)](https://aerolab-app.onrender.com/)
-[![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
+[![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](LICENSE)
 
 AeroLab is a free, browser-based aerodynamic analysis tool built on the industry-standard [XFOIL](https://web.mit.edu/drela/Public/web/xfoil/) panel method solver. It allows students, researchers, and aerospace enthusiasts to analyse 2D airfoil sections — including lift coefficient (CL), drag coefficient (CD), pitching moment (Cm), and pressure distribution (Cp) — without installing any software.
 
@@ -159,7 +159,7 @@ GitHub: [@583phoenix-hue](https://github.com/583phoenix-hue)
 
 ## License
 
-This project is licensed under the MIT License. See [LICENSE](LICENSE) for details.
+This project is licensed under the GNU General Public License v3.0. See [LICENSE](LICENSE) for details.
 
 ---
 
