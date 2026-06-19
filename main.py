@@ -130,9 +130,15 @@ def detect_and_merge_sections(data_lines):
                 merged = data_lines
         else:
             merged = data_lines
-    if len(merged) > 1 and abs(merged[0][0] - merged[-1][0]) < 0.001 and abs(merged[0][1] - merged[-1][1]) < 0.001:
-        merged = merged[:-1]
-        logger.debug("Removed duplicate TE")
+    # NOTE: Do NOT strip a coincident first/last point here.
+    # For a Selig-format airfoil the coordinate list is a single closed loop
+    # that legitimately starts and ends at the same trailing-edge point
+    # (common in NACA 6-series files, e.g. both ends at 1.00000 0.00000).
+    # Removing that final point opens the trailing edge, producing a large
+    # TE gap that XFOIL reports as a "Blunt trailing edge" and then fails to
+    # converge on. XFOIL handles a closed loop correctly, so we keep it.
+    # (A genuinely duplicated *leading-edge* point in Lednicer files is still
+    # removed above, where it is actually redundant.)
     return merged
 
 
@@ -305,6 +311,15 @@ def _run_xfoil_mode(
                 pass
 
     script_lines = []
+    # Disable XFOIL's interactive graphics BEFORE any command that would
+    # otherwise try to open a plot window (e.g. PANE). Without this, XFOIL
+    # blocks waiting for a display that the server has no usable access to,
+    # which manifests as the viscous run "timing out" after 90s even though
+    # the solver itself would converge in seconds. PLOP -> G toggles the
+    # graphics device off; the blank line exits the PLOP sub-menu.
+    script_lines.append("PLOP")
+    script_lines.append("G")
+    script_lines.append("")
     script_lines.append(f"LOAD {coords_filename}")
     script_lines.append("PANE")
 
@@ -344,17 +359,24 @@ def _run_xfoil_mode(
 
     proc = None
     try:
+        # Feed the script to XFOIL as a piped string rather than handing it an
+        # open file object as stdin. With a file-object stdin, XFOIL on some
+        # platforms re-displays its prompt after QUIT and waits for more input
+        # that never arrives, so communicate() blocks until the timeout. Piping
+        # the script as a string closes stdin cleanly at EOF, so XFOIL exits.
         with open(script_path, "r") as script_file:
-            proc = subprocess.Popen(
-                [XFOIL_EXE],
-                stdin=script_file,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-                cwd=work_dir,
-            )
+            script_text = script_file.read()
 
-        stdout, stderr = proc.communicate(timeout=timeout)
+        proc = subprocess.Popen(
+            [XFOIL_EXE],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            cwd=work_dir,
+        )
+
+        stdout, stderr = proc.communicate(input=script_text, timeout=timeout)
         time.sleep(0.3)
 
         with open(log_path, "w", newline="\n") as f:

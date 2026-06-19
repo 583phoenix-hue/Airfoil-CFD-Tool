@@ -131,18 +131,47 @@ class TestDetectAndMergeSections:
         assert isinstance(result, list)
         assert len(result) > 0
 
-    def test_removes_duplicate_trailing_edge(self):
-        """If first and last point are identical, duplicate TE should be removed."""
+    def test_naca6series_closed_te_regression(self):
+        """Regression test for the NACA 6-series bug: these files are a closed
+        Selig loop whose first and last point are both exactly (1.0, 0.0).
+        The parser must keep every point so the trailing edge stays closed."""
+        # Abbreviated NACA 65-210-style loop: TE -> upper -> LE -> lower -> TE
         data = [
-            [1.0, 0.001], [0.75, 0.016], [0.5, 0.030], [0.25, 0.041],
-            [0.0, 0.0],
-            [0.25, -0.041], [0.5, -0.030], [0.75, -0.016], [1.0, 0.001],
+            [1.00000, 0.00000],
+            [0.50000, 0.05915],
+            [0.10000, 0.03555],
+            [0.00435, 0.00819],
+            [0.00000, 0.00000],
+            [0.00565, -0.00719],
+            [0.10000, -0.02521],
+            [0.50000, -0.03709],
+            [1.00000, 0.00000],
         ]
+        n_before = len(data)
         result = detect_and_merge_sections(data)
-        # First and last should not be identical
-        assert not (abs(result[0][0] - result[-1][0]) < 0.001 and
-                    abs(result[0][1] - result[-1][1]) < 0.001), \
-            "Duplicate trailing edge was not removed"
+        assert len(result) == n_before, "No point should be dropped"
+        assert result[-1][0] == 1.0 and abs(result[-1][1]) < 1e-6, \
+            "Final trailing-edge point must be preserved"
+
+    def test_preserves_closed_trailing_edge(self):
+        """A Selig airfoil that starts and ends at the same TE point is a
+        valid closed loop (common in NACA 6-series). The closing point must
+        be PRESERVED — removing it opens the trailing edge and breaks XFOIL
+        convergence."""
+        data = [
+            [1.0, 0.0], [0.75, 0.016], [0.5, 0.030], [0.25, 0.041],
+            [0.0, 0.0],
+            [0.25, -0.041], [0.5, -0.030], [0.75, -0.016], [1.0, 0.0],
+        ]
+        n_before = len(data)
+        result = detect_and_merge_sections(data)
+        # The closing TE point should still be there — no point dropped.
+        assert len(result) == n_before, \
+            "Closed trailing edge point was incorrectly removed"
+        # And the loop should remain closed (first == last).
+        assert (abs(result[0][0] - result[-1][0]) < 0.001 and
+                abs(result[0][1] - result[-1][1]) < 0.001), \
+            "Trailing edge should remain closed"
 
     def test_reversed_selig_corrected(self):
         """Reversed Selig (TE→lower→LE→upper→TE) should be flipped."""
