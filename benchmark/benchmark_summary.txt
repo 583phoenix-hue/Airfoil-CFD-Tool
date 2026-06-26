@@ -1,0 +1,26 @@
+================================================================
+AeroLab Airfoil Parser Benchmark — Summary
+================================================================
+Generated : 2026-06-25T19:48:24.448814+00:00
+Condition : Re = 200,000   alpha = 5.0 deg
+
+Airfoils total            : 1000
+Multi-element (excluded)  : 0
+Single-element evaluated  : 1000
+
+RAW XFOIL (file as-is)
+    converged : 225  (22.5 %)
+
+AEROLAB PARSER + XFOIL
+    converged : 857  (85.7 %)
+
+HEADLINE RESULT
+    Files rescued by parser : 633  (63.3 %)
+    Convergence uplift      : +63.2 percentage points
+
+Diagnostics
+    Regressed (raw ok, parsed failed) : 1
+    Both failed                       : 142
+    Parser raised an error            : 0
+================================================================
+Full per-airfoil results: benchmark_results.csv

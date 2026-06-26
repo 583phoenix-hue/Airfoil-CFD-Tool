@@ -1,0 +1,19 @@
+{
+  "generated_utc": "2026-06-25T19:48:24.448814+00:00",
+  "reynolds": 200000,
+  "alpha": 5.0,
+  "xfoil_path": "xfoil.exe",
+  "total_airfoils": 1000,
+  "multi_element_excluded": 0,
+  "single_element_evaluated": 1000,
+  "raw_xfoil_converged": 225,
+  "raw_xfoil_converged_pct": 22.5,
+  "aerolab_converged": 857,
+  "aerolab_converged_pct": 85.7,
+  "rescued_by_parser": 633,
+  "rescued_by_parser_pct": 63.3,
+  "uplift_pct_points": 63.2,
+  "regressed": 1,
+  "both_failed": 142,
+  "parser_errored": 0
+}
