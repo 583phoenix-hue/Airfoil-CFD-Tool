@@ -10,7 +10,7 @@ tags:
   - education
 authors:
   - name: Nathan Pranav
-    orcid: https://orcid.org/0009-0005-4120-635X
+    orcid: 0009-0005-4120-635X
     affiliation: 1
 affiliations:
   - name: Independent Researcher
@@ -35,7 +35,11 @@ XFOIL [@Drela1989] is the most widely used low Reynolds number airfoil analysis 
 
 Existing web-based XFOIL interfaces address the accessibility barrier but do not resolve either of these issues. AeroLab addresses both.
 
-# Implementation
+# State of the Field
+
+Several tools exist for airfoil aerodynamic analysis, ranging from desktop applications to online interfaces. XFOIL [@Drela1989] itself remains the dominant solver for low Reynolds number analysis but requires local installation and manual coordinate file preparation. XFLR5 provides a graphical interface to XFOIL and extends it to three-dimensional wing analysis, but is a desktop application requiring installation. Web-based wrappers for XFOIL exist (e.g., Airfoil Tools) but do not implement robust coordinate preprocessing, meaning users must still manually resolve file format issues before analysis. None of the existing web-based tools provide animated potential flow visualisation as a built-in feature. AeroLab addresses these gaps by combining automatic coordinate repair, XFOIL-powered viscous analysis, and independent potential flow visualisation in a single browser-based tool requiring no installation.
+
+# Software Design
 
 ## Coordinate Parser
 
@@ -43,7 +47,7 @@ The parser (`parse_dat_file`, `detect_and_merge_sections` in `main.py`) reads co
 
 1. **Format detection** — identifies Selig (single section) versus Lednicer (two sections separated by a return to near-zero x) format by scanning for a section break where x drops below 0.01 after exceeding 0.5.
 2. **Winding order correction** — for Selig files, determines correct winding direction by inspecting the y-coordinate of the point immediately preceding the leading edge; a negative value indicates reversed winding and the coordinate list is reversed.
-3. **Duplicate point removal** — removes duplicate leading edge points that appear when Lednicer lower sections repeat the (0, 0) origin, and removes duplicate trailing edge points where the first and last coordinates coincide.
+3. **Duplicate point removal** — removes duplicate leading edge points that appear when Lednicer lower sections repeat the (0, 0) origin, and preserves closed trailing edge points where the first and last coordinates coincide (required for correct XFOIL panelling of NACA 6-series laminar airfoils).
 4. **Range filtering** — discards points outside physically plausible bounds (x ∈ [−0.5, 1.5], y ∈ [−1.0, 1.0]) and rejects files with fewer than ten valid coordinate pairs.
 
 ## XFOIL Integration
@@ -57,6 +61,14 @@ Boundary layer data is extracted from XFOIL's `DUMP` output, which provides arc 
 An independent vortex panel method is implemented in `Airfoil_Analysis.py` (`compute_flow_field`) for flow field visualisation. The method uses N = 160 constant-strength vortex panels with cosine arc-length spacing. The influence matrix is assembled using the standard vortex panel velocity kernel [@Katz2001], with the Kutta condition enforced by replacing the final matrix row with the constraint γ~1~ + γ~N~ = 0. For airfoils where cosine spacing produces an ill-conditioned system (detected by max|γ| > 500), the solver automatically retries with uniform arc-length spacing.
 
 The off-body velocity field is computed on a 220 × 220 grid by superimposing the freestream and the vortex panel contributions at each grid point. Interior grid points are masked using matplotlib's `Path.contains_points`. Streamlines are integrated from left-boundary seed points using a first-order Euler scheme with bilinear velocity interpolation. The resulting animation is rendered in Plotly with a matplotlib-generated bicubic-interpolated speed heatmap as a static background layer, enabling smooth colour transitions without per-frame re-rendering.
+
+# Research Impact Statement
+
+AeroLab lowers the barrier to entry for airfoil aerodynamic analysis by eliminating the two most common friction points for new users: coordinate file incompatibility and the absence of flow visualisation. A benchmark study across 1,000 airfoil coordinate files from the UIUC Airfoil Coordinate Database demonstrates that AeroLab's coordinate parser increases XFOIL analysis success rates from 22.5% (raw XFOIL) to 85.7%, rescuing 633 files through automatic format detection and repair [@Pranav2026benchmark]. The tool is freely accessible at https://aerolab.me and is intended for use in aerodynamics education and early-stage research, particularly for users without access to commercial CFD software.
+
+# AI Usage Disclosure
+
+Generative AI was used as a coding assistant during the development of AeroLab, such as troubleshooting and test scaffolding. AI assistance was also used for copy-editing during preparation of this manuscript. All AI-assisted outputs were reviewed, validated, and modified by the author. Core design decisions, problem framing, and architectural choices were made by the human author. The author takes full responsibility for all submitted materials.
 
 # Acknowledgements
 
