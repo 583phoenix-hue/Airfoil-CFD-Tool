@@ -38,7 +38,7 @@ Existing web-based XFOIL interfaces address the accessibility barrier but do not
 
 # State of the Field
 
-Several tools exist for airfoil aerodynamic analysis, ranging from desktop applications to online interfaces. XFOIL [@Drela1989] itself remains the dominant solver for low Reynolds number analysis but requires local installation and manual coordinate file preparation. XFLR5 provides a graphical interface to XFOIL and extends it to three-dimensional wing analysis, but is a desktop application requiring installation. Web-based wrappers for XFOIL exist (e.g., Airfoil Tools) but do not implement robust coordinate preprocessing, meaning users must still manually resolve file format issues before analysis. Interactive LBM flow visualisers such as Kutta exist as standalone tools but are not integrated with coordinate preprocessing pipelines or XFOIL analysis workflows, and operate only on parametric airfoil shapes rather than arbitrary user-supplied geometry. AeroLab addresses these gaps by combining automatic coordinate repair, XFOIL-powered viscous analysis, and an interactive GPU-accelerated LBM wind tunnel operating on the user's actual uploaded airfoil geometry — all in a single browser-based tool requiring no installation.
+Several tools exist for airfoil aerodynamic analysis, ranging from desktop applications to online interfaces. XFOIL [@Drela1989] itself remains the dominant solver for low Reynolds number analysis but requires local installation and manual coordinate file preparation. XFLR5 provides a graphical interface to XFOIL and extends it to three-dimensional wing analysis, but is a desktop application requiring installation. Web-based wrappers for XFOIL exist (e.g., Airfoil Tools) but do not implement robust coordinate preprocessing, meaning users must still manually resolve file format issues before analysis. Interactive LBM flow visualisers such as Kutta [@Gimenes2026] exist as standalone tools but are not integrated with coordinate preprocessing pipelines or XFOIL analysis workflows, and operate only on parametric airfoil shapes rather than arbitrary user-supplied geometry. AeroLab addresses these gaps by combining automatic coordinate repair, XFOIL-powered viscous analysis, and an interactive GPU-accelerated LBM wind tunnel operating on the user's actual uploaded airfoil geometry — all in a single browser-based tool requiring no installation.
 
 # Software Design
 
@@ -73,6 +73,6 @@ Generative AI was used as a coding assistant during the development of AeroLab, 
 
 # Acknowledgements
 
-AeroLab is built on XFOIL, developed by Professor Mark Drela at MIT. The interactive wind tunnel component builds on the D2Q9 LBM approach demonstrated in the Kutta open-source flow visualiser. The author thanks the maintainers of the UIUC Airfoil Coordinate Database for providing the reference airfoil data used in testing.
+AeroLab is built on XFOIL, developed by Professor Mark Drela at MIT. The interactive wind tunnel component builds on the D2Q9 LBM approach demonstrated in the Kutta open-source flow visualiser [@Gimenes]. The author thanks the maintainers of the UIUC Airfoil Coordinate Database for providing the reference airfoil data used in testing.
 
 # References
