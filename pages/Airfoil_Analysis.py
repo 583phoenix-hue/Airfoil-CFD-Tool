@@ -7,10 +7,40 @@ import os
 import time
 import io
 import base64
+import json
+import streamlit.components.v1 as components
 from db_utils import increment_analysis_count
 
 
 # ── Flow Visualization Helpers ───────────────────────────────────────────────
+
+# ── LBM Wind Tunnel component ────────────────────────────────────────────────
+_LBM_TEMPLATE = os.path.join(os.path.dirname(__file__), "airfoil_flow_lbm_aerolab.html")
+
+def build_lbm_component(coords_after, airfoil_name: str = "") -> None:
+    """
+    Render the interactive LBM wind-tunnel visualisation using the user's
+    actual parsed airfoil coordinates injected into the WebGL2 component.
+    """
+    try:
+        with open(_LBM_TEMPLATE, "r") as f:
+            template = f.read()
+    except FileNotFoundError:
+        st.error(
+            f"⚠️ LBM visualisation template not found. Expected: `{_LBM_TEMPLATE}`"
+        )
+        return
+
+    coords_json = json.dumps(
+        [[round(float(x), 6), round(float(y), 6)] for x, y in coords_after]
+    )
+    name_json = json.dumps(airfoil_name or "Uploaded airfoil")
+
+    html = template.replace("%%USER_COORDS%%", coords_json)
+    html = html.replace("%%USER_NAME%%", name_json)
+
+    components.html(html, height=640, scrolling=False)
+
 
 @st.cache_data(show_spinner=False)
 def compute_flow_field(coords_tuple, alpha_deg, n_streamlines=22, grid_res=220):
@@ -911,68 +941,41 @@ with right_col:
                 mime="text/csv"
             )
 
-        # ── Airflow Visualization ─────────────────────────────────────────────
+        # ── Airflow Visualization (LBM Wind Tunnel) ─────────────────────────
         st.markdown("---")
-        st.subheader("🌊 Airflow Visualization")
+        st.subheader("🌊 Interactive Wind Tunnel")
+        st.caption(
+            "Live Lattice-Boltzmann (D2Q9) simulation of your airfoil. "
+            "Adjust AOA, flow speed, and trail density with the sliders. "
+            "Use 📷 Save PNG to capture the current view. "
+            "Note: Reynolds number shown is in lattice units — independent of the XFOIL analysis above."
+        )
 
-        st.caption("Speed heatmap with animated flow particles. Press ▶ Play to animate. Use the camera icon to save PNG.")
-        has_bl = result.get("bl_data") is not None
+        _airfoil_display_name = (
+            uploaded_file.name.replace(".dat", "").replace("_", " ")
+            if uploaded_file is not None
+            else "Airfoil"
+        )
 
-        try:
-            with st.spinner("Computing flow field... (higher resolution may take ~60s on first run)"):
-                sl_x, sl_y, speed_grid, x_arr, y_arr, coords_list = compute_flow_field(
-                    tuple(map(tuple, result["coords_after"])),
-                    last_params['alpha']
-                )
+        build_lbm_component(
+            coords_after=result["coords_after"],
+            airfoil_name=_airfoil_display_name,
+        )
 
-            bl_overlay = None
-            if has_bl:
-                try:
-                    bl_overlay = build_bl_overlay(result["coords_after"], result["bl_data"])
-                except Exception as bl_err:
-                    st.warning(f"BL overlay failed: {bl_err}")
-
-            flow_fig = build_flow_animation(
-                sl_x, sl_y, speed_grid, x_arr, y_arr, coords_list, last_params['alpha'],
-                show_particles=st.session_state.show_particles,
-                show_streamlines=st.session_state.show_streamlines,
-                bl_overlay=bl_overlay,
-                show_bl=st.session_state.show_bl,
-            )
-            st.plotly_chart(flow_fig, use_container_width=True)
-        except Exception as e:
-            st.error(f"⚠️ Visualization error: {e}")
-
-        # ── Checkboxes below graph ────────────────────────────────────────────
-        cb_col1, cb_col2, cb_col3, _ = st.columns([1, 1, 1, 2])
-        with cb_col1:
-            new_p = st.checkbox("Show Dot Particles", value=st.session_state.show_particles, key="cb_particles")
-            if new_p != st.session_state.show_particles:
-                st.session_state.show_particles = new_p
-                st.rerun()
-        with cb_col2:
-            new_s = st.checkbox("Show Streamlines", value=st.session_state.show_streamlines, key="cb_streamlines")
-            if new_s != st.session_state.show_streamlines:
-                st.session_state.show_streamlines = new_s
-                st.rerun()
-        with cb_col3:
-            bl_label = "Show BL Envelope" if has_bl else "Show BL Envelope (needs viscous)"
-            new_bl = st.checkbox(bl_label, value=st.session_state.show_bl,
-                                 key="cb_bl", disabled=not has_bl)
-            if new_bl != st.session_state.show_bl:
-                st.session_state.show_bl = new_bl
-                st.rerun()
-
-        with st.expander("ℹ️ About This Visualization"):
+        with st.expander("ℹ️ About This Visualisation"):
             st.markdown("""
-            **Potential Flow (Vortex Panel Method) — 160 panels, 220×220 grid**
-            - **Colour field** — speed at every point: blue = slow (high pressure), red = fast (low pressure)
-            - **White lines** — streamlines showing flow direction
-            - **White dots** — animated fluid particles; they move faster where flow is faster
-            - **Amber dashed line** — displacement thickness δ* envelope from XFOIL viscous BL data
-            - **▲T / ▼T markers** — laminar→turbulent transition locations on upper/lower surface
+            **Interactive Wind Tunnel — D2Q9 Lattice-Boltzmann Method (WebGL2)**
 
-            *Outer flow: inviscid potential flow. BL envelope + transition: XFOIL viscous solution.*
+            - **Colour field** — fluid speed: blue = slow (high pressure), red = fast (low pressure)
+            - **White trails** — passive smoke tracers showing flow direction and speed
+            - **AOA slider** — pitches the airfoil in real time; freestream stays horizontal
+            - **Field selector** — switch between velocity magnitude, pressure (Cp), and vorticity
+            - **Vorticity view** — red = clockwise rotation, blue = counter-clockwise; shows wake vortex shedding
+            - **📷 Save PNG** — captures the current canvas state as a PNG file
+
+            *Qualitative visualisation using your uploaded airfoil geometry.
+            Captures correct flow topology (stagnation point, separation, wake vortices)
+            but runs at low lattice Reynolds number — not the physical Re from the XFOIL analysis.*
             """)
 
     elif uploaded_file is not None:

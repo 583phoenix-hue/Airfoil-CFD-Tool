@@ -1,0 +1,1003 @@
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background: #0a0d18; }
+  #fw2 { padding: 0.75rem 0 0.5rem; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #0a0d18; }
+  #fc2 { display: block; width: 100%; border-radius: 8px; }
+  .cr2 { display: flex; align-items: center; gap: 10px; margin: 0.6rem 0 0.1rem; }
+  .cl2 { font-size: 12px; color: #a0aab4; min-width: 90px; }
+  .cv2 { font-size: 12px; font-weight: 600; color: #e8ecf0; min-width: 42px; text-align: right; font-variant-numeric: tabular-nums; }
+  .sr2 { display: flex; gap: 10px; margin-top: 0.6rem; flex-wrap: wrap; }
+  .st2 { background: #161b2e; border: 1px solid #2a3050; border-radius: 6px; padding: 5px 14px; }
+  .sl2 { font-size: 10px; color: #6b7a99; }
+  .sv2 { font-size: 15px; font-weight: 600; color: #e8ecf0; font-variant-numeric: tabular-nums; }
+  #fd2 { font-size: 12px; padding: 4px 8px; border-radius: 6px; border: 1px solid #2a3050; background: #161b2e; color: #e8ecf0; cursor: pointer; }
+  #eng2 { font-size: 10px; color: #4a5570; letter-spacing: 0.06em; text-transform: uppercase; margin-top: 4px; }
+  #png-btn { font-size: 12px; padding: 4px 12px; border-radius: 6px; border: 1px solid #2a3050; background: #161b2e; color: #e8ecf0; cursor: pointer; white-space: nowrap; }
+  #png-btn:hover { background: #1e2540; }
+  input[type=range] { accent-color: #667eea; }
+</style>
+
+<div id="fw2">
+  <canvas id="fc2" width="680" height="360"></canvas>
+  <div id="eng2">D2Q9 lattice-Boltzmann &middot; WebGL2 &middot; live unsteady solve</div>
+
+  <div class="cr2">
+    <span class="cl2">Angle of attack</span>
+    <input type="range" id="as2" min="-20" max="25" value="6" step="0.5" style="flex:1">
+    <span class="cv2" id="av2">6.0&deg;</span>
+  </div>
+
+  <div class="cr2">
+    <span class="cl2">Field</span>
+    <select id="fd2">
+      <option value="speed" selected>Velocity</option>
+      <option value="cp">Pressure (Cp)</option>
+      <option value="vort">Vorticity</option>
+    </select>
+  </div>
+
+  <div class="cr2">
+    <span class="cl2">Flow speed</span>
+    <input type="range" id="us2" min="30" max="100" value="60" step="2" style="flex:1">
+    <span class="cv2" id="uv2">0.060</span>
+  </div>
+
+  <div class="cr2">
+    <span class="cl2">Trails</span>
+    <input type="range" id="ps2" min="800" max="5000" value="2600" step="100" style="flex:1">
+    <span class="cv2" id="pv2">2600</span>
+    <button id="png-btn" style="margin-left:8px;">Save PNG</button>
+  </div>
+
+  <div class="sr2">
+    <div class="st2"><div class="sl2">CL (approx)</div><div class="sv2" id="clv2">&mdash;</div></div>
+    <div class="st2"><div class="sl2">CD (approx)</div><div class="sv2" id="cdv2">&mdash;</div></div>
+    <div class="st2"><div class="sl2">Reynolds</div><div class="sv2" id="rev2">&mdash;</div></div>
+    <div class="st2" id="sep-card"><div class="sl2">Separation</div><div class="sv2" id="sepv2">&mdash;</div></div>
+  </div>
+</div>
+
+<script>
+(function(){
+
+// ── Injected geometry (replaced by Python before st.components.v1.html()) ──
+const USER_COORDS = %%USER_COORDS%%;   // list of [x,y] pairs, or [] for fallback
+const USER_NAME   = %%USER_NAME%%;     // display name string
+
+const cv=document.getElementById('fc2');
+const cx2=cv.getContext('2d');
+const W=680,H=360;
+
+const PX=54,PY=26;
+const PW=W-PX-42,PH=H-2*PY;
+const DX0=-0.42,DX1=1.42,DY0=-0.46,DY1=0.46;
+
+// ---------- lattice grid ----------
+const NX=320, NY=160;               // simulation / field-render resolution (2:1, matches domain aspect 1.84:0.92)
+const CHORD_L = NX/(DX1-DX0);       // lattice cells per unit chord
+const TAU = 0.58;                   // BGK relaxation time (fixed)
+const NU_L = (TAU-0.5)/3;           // lattice viscosity
+const STEPS_PER_FRAME = 4;
+
+const pcv=document.createElement('canvas');
+pcv.width=W;pcv.height=H;
+const pctx=pcv.getContext('2d');
+
+// ---------- offscreen WebGL2 field canvas ----------
+const glcv=document.createElement('canvas');
+glcv.width=NX; glcv.height=NY;
+let gl=null, glOK=false, glErr='';
+try{
+  gl=glcv.getContext('webgl2',{alpha:false,antialias:false,depth:false,stencil:false,preserveDrawingBuffer:false});
+  if(!gl) throw new Error('WebGL2 unavailable');
+  if(!gl.getExtension('EXT_color_buffer_float')) throw new Error('EXT_color_buffer_float unavailable');
+  glOK=true;
+}catch(e){ glErr=e.message; }
+
+// ================= geometry (unchanged NACA / Clark-Y generation) =================
+
+function naca4(m,p,t,n){
+  m/=100;p/=10;t/=100;
+  const up=[],lo=[];
+  for(let i=0;i<=n;i++){
+    const b=Math.PI*i/n,x=0.5*(1-Math.cos(b));
+    const yt=5*t*(0.2969*Math.sqrt(x)-0.126*x-0.3516*x*x+0.2843*x**3-0.1036*x**4);
+    let yc=0,dyc=0;
+    if(m>0){
+      if(x<p){yc=m/p/p*(2*p*x-x*x);dyc=2*m/p/p*(p-x);}
+      else{yc=m/(1-p)**2*((1-2*p)+2*p*x-x*x);dyc=2*m/(1-p)**2*(p-x);}
+    }
+    const th=Math.atan(dyc);
+    up.push([x-yt*Math.sin(th),yc+yt*Math.cos(th)]);
+    lo.push([x+yt*Math.sin(th),yc-yt*Math.cos(th)]);
+  }
+  up.reverse();
+  return up.concat(lo.slice(1));
+}
+
+function clarkY(){
+  const r=[[100,.44],[95,1.46],[90,2.22],[80,3.69],[70,5.07],[60,6.23],[50,7.1],[40,7.62],[30,7.79],[25,7.67],[20,7.35],[15,6.79],[10,5.88],[7.5,5.23],[5,4.39],[2.5,3.18],[1.25,2.17],[0,0],[1.25,-1.35],[2.5,-1.93],[5,-2.55],[7.5,-2.9],[10,-3.05],[15,-3.01],[20,-2.75],[25,-2.41],[30,-2.06],[40,-1.38],[50,-.85],[60,-.44],[70,-.16],[80,0],[90,0],[95,0],[100,-.44]];
+  return r.map(([x,y])=>[x/100,y/100]);
+}
+
+const SHAPES={
+  naca0012:()=>naca4(0,0,12,50),
+  naca2412:()=>naca4(2,4,12,50),
+  naca4412:()=>naca4(4,4,12,50),
+  naca6409:()=>naca4(6,4,9,50),
+  clark_y:()=>clarkY()
+};
+
+const NP=160;
+
+function rotate(coords,aDeg){
+  const a=-aDeg*Math.PI/180,ca=Math.cos(a),sa=Math.sin(a);
+  const px=0.25,py=0;
+  return coords.map(([x,y])=>{
+    const dx=x-px,dy=y-py;
+    return [px+dx*ca-dy*sa,py+dx*sa+dy*ca];
+  });
+}
+
+function panelise(coords){
+  const xs=coords.map(p=>p[0]),ys=coords.map(p=>p[1]);
+  const arc=[0];
+  for(let i=1;i<coords.length;i++)
+    arc.push(arc[i-1]+Math.hypot(xs[i]-xs[i-1],ys[i]-ys[i-1]));
+  const L=arc[arc.length-1];
+  const xp=[],yp=[];
+  for(let i=0;i<=NP;i++){
+    const s=L*0.5*(1-Math.cos(Math.PI*i/NP));
+    let j=0;while(j<arc.length-2&&arc[j+1]<s)j++;
+    const t=(s-arc[j])/(arc[j+1]-arc[j]+1e-12);
+    xp.push(xs[j]+(xs[j+1]-xs[j])*t);
+    yp.push(ys[j]+(ys[j+1]-ys[j])*t);
+  }
+  return{xp,yp};
+}
+
+// scanline polygon rasterisation into the lattice grid (fast: O(rows * panels))
+function rasterMask(xp,yp){
+  const mask=new Uint8Array(NX*NY);
+  const n=xp.length;
+  for(let iy=0;iy<NY;iy++){
+    const wy=DY0+(iy+0.5)/NY*(DY1-DY0);
+    const xs=[];
+    for(let i=0;i<n-1;i++){
+      const y1=yp[i],y2=yp[i+1];
+      if((y1>wy)!==(y2>wy)){
+        const x1=xp[i],x2=xp[i+1];
+        xs.push(x1+(x2-x1)*(wy-y1)/(y2-y1));
+      }
+    }
+    xs.sort((a,b)=>a-b);
+    for(let k=0;k+1<xs.length;k+=2){
+      let ix0=Math.ceil((xs[k]-DX0)/(DX1-DX0)*NX);
+      let ix1=Math.floor((xs[k+1]-DX0)/(DX1-DX0)*NX);
+      ix0=Math.max(0,ix0); ix1=Math.min(NX-1,ix1);
+      for(let ix=ix0;ix<=ix1;ix++) mask[iy*NX+ix]=255;
+    }
+  }
+  return mask;
+}
+
+// ================= WebGL setup =================
+
+function compile(src,type){
+  const s=gl.createShader(type);
+  gl.shaderSource(s,src);
+  gl.compileShader(s);
+  if(!gl.getShaderParameter(s,gl.COMPILE_STATUS)){
+    const log=gl.getShaderInfoLog(s);
+    gl.deleteShader(s);
+    throw new Error('shader compile error: '+log);
+  }
+  return s;
+}
+function link(vs,fs){
+  const p=gl.createProgram();
+  gl.attachShader(p,vs); gl.attachShader(p,fs);
+  gl.linkProgram(p);
+  if(!gl.getProgramParameter(p,gl.LINK_STATUS)){
+    const log=gl.getProgramInfoLog(p);
+    throw new Error('program link error: '+log);
+  }
+  return p;
+}
+function makeProgram(vsSrc,fsSrc){
+  const vs=compile(vsSrc,gl.VERTEX_SHADER);
+  const fs=compile(fsSrc,gl.FRAGMENT_SHADER);
+  return link(vs,fs);
+}
+
+const VS_SRC=`#version 300 es
+const vec2 P[3]=vec2[3](vec2(-1.0,-1.0),vec2(3.0,-1.0),vec2(-1.0,3.0));
+out vec2 vUV;
+void main(){
+  vec2 p=P[gl_VertexID];
+  vUV=(p+1.0)*0.5;
+  gl_Position=vec4(p,0.0,1.0);
+}`;
+
+const STEP_FS_SRC=`#version 300 es
+precision highp float;
+uniform sampler2D texA,texB,texC,texMask;
+uniform vec2 texel;
+uniform ivec2 gridSize;
+uniform float tau;
+uniform float U0;
+in vec2 vUV;
+layout(location=0) out vec4 outA;
+layout(location=1) out vec4 outB;
+layout(location=2) out vec4 outC;
+
+const float w0=4.0/9.0;
+const float ws=1.0/9.0;
+const float wd=1.0/36.0;
+
+vec2 dir(int i){
+  if(i==0) return vec2(0.0,0.0);
+  if(i==1) return vec2(1.0,0.0);
+  if(i==2) return vec2(0.0,1.0);
+  if(i==3) return vec2(-1.0,0.0);
+  if(i==4) return vec2(0.0,-1.0);
+  if(i==5) return vec2(1.0,1.0);
+  if(i==6) return vec2(-1.0,1.0);
+  if(i==7) return vec2(-1.0,-1.0);
+  return vec2(1.0,-1.0);
+}
+float wt(int i){
+  if(i==0) return w0;
+  if(i>=1&&i<=4) return ws;
+  return wd;
+}
+int opp(int i){
+  if(i==0) return 0;
+  if(i==1) return 3;
+  if(i==2) return 4;
+  if(i==3) return 1;
+  if(i==4) return 2;
+  if(i==5) return 7;
+  if(i==6) return 8;
+  if(i==7) return 5;
+  return 6;
+}
+float getF(int i, vec2 uv){
+  if(i==0) return texture(texA,uv).r;
+  if(i==1) return texture(texA,uv).g;
+  if(i==2) return texture(texA,uv).b;
+  if(i==3) return texture(texA,uv).a;
+  if(i==4) return texture(texB,uv).r;
+  if(i==5) return texture(texB,uv).g;
+  if(i==6) return texture(texB,uv).b;
+  if(i==7) return texture(texB,uv).a;
+  return texture(texC,uv).r;
+}
+float feq(int i, float rho, float ux, float uy){
+  vec2 e=dir(i);
+  float eu=e.x*ux+e.y*uy;
+  float uu=ux*ux+uy*uy;
+  return wt(i)*rho*(1.0+3.0*eu+4.5*eu*eu-1.5*uu);
+}
+
+void main(){
+  ivec2 ip=ivec2(vUV*vec2(gridSize));
+  float mySolid=texture(texMask,vUV).r;
+
+  if(mySolid>0.5){
+    float f0=getF(opp(0),vUV), f1=getF(opp(1),vUV), f2=getF(opp(2),vUV), f3=getF(opp(3),vUV);
+    float f4=getF(opp(4),vUV), f5=getF(opp(5),vUV), f6=getF(opp(6),vUV), f7=getF(opp(7),vUV), f8=getF(opp(8),vUV);
+    outA=vec4(f0,f1,f2,f3);
+    outB=vec4(f4,f5,f6,f7);
+    outC=vec4(f8,1.0,0.0,0.0);
+    return;
+  }
+
+  bool isInlet = ip.x==0;
+  bool isOutlet = ip.x==gridSize.x-1;
+  bool isTop = ip.y==gridSize.y-1;
+  bool isBottom = ip.y==0;
+
+  if(isOutlet){
+    vec2 src=vUV-vec2(texel.x,0.0);
+    float f0=getF(0,src), f1=getF(1,src), f2=getF(2,src), f3=getF(3,src);
+    float f4=getF(4,src), f5=getF(5,src), f6=getF(6,src), f7=getF(7,src), f8=getF(8,src);
+    float rho=f0+f1+f2+f3+f4+f5+f6+f7+f8;
+    float ux=(f1+f5+f8-f3-f6-f7)/rho;
+    float uy=(f2+f5+f6-f4-f7-f8)/rho;
+    outA=vec4(f0,f1,f2,f3);
+    outB=vec4(f4,f5,f6,f7);
+    outC=vec4(f8,rho,ux,uy);
+    return;
+  }
+
+  if(isInlet||isTop||isBottom){
+    float rho=1.0, ux=U0, uy=0.0;
+    float f0=feq(0,rho,ux,uy), f1=feq(1,rho,ux,uy), f2=feq(2,rho,ux,uy), f3=feq(3,rho,ux,uy);
+    float f4=feq(4,rho,ux,uy), f5=feq(5,rho,ux,uy), f6=feq(6,rho,ux,uy), f7=feq(7,rho,ux,uy), f8=feq(8,rho,ux,uy);
+    outA=vec4(f0,f1,f2,f3);
+    outB=vec4(f4,f5,f6,f7);
+    outC=vec4(f8,rho,ux,uy);
+    return;
+  }
+
+  float fin[9];
+  for(int i=0;i<9;i++){
+    vec2 e=dir(i);
+    vec2 src=vUV-e*texel;
+    float srcSolid=texture(texMask,src).r;
+    if(srcSolid>0.5){
+      fin[i]=getF(opp(i),vUV);
+    }else{
+      fin[i]=getF(i,src);
+    }
+  }
+  float rho=0.0;
+  for(int i=0;i<9;i++) rho+=fin[i];
+  float ux=(fin[1]+fin[5]+fin[8]-fin[3]-fin[6]-fin[7])/rho;
+  float uy=(fin[2]+fin[5]+fin[6]-fin[4]-fin[7]-fin[8])/rho;
+
+  // Stability net matching the Go reference solver's collide() clamp: keeps
+  // extreme local states (broadside body, high inlet speed, low tau) from
+  // feeding runaway values into feq and blowing up to NaN. Inert in the normal
+  // operating envelope (|u| well under 0.2 here), same as in lbm.go.
+  const float uMax=0.35, rhoMin=0.5, rhoMax=2.0;
+  rho=clamp(rho,rhoMin,rhoMax);
+  float spd2=ux*ux+uy*uy;
+  if(spd2>uMax*uMax){
+    float k=uMax/sqrt(spd2);
+    ux*=k; uy*=k;
+  }
+
+  float fo[9];
+  for(int i=0;i<9;i++){
+    float eq=feq(i,rho,ux,uy);
+    fo[i]=fin[i]-(fin[i]-eq)/tau;
+  }
+  outA=vec4(fo[0],fo[1],fo[2],fo[3]);
+  outB=vec4(fo[4],fo[5],fo[6],fo[7]);
+  outC=vec4(fo[8],rho,ux,uy);
+}`;
+
+const RENDER_FS_SRC=`#version 300 es
+precision highp float;
+uniform sampler2D texC, texMask;
+uniform vec2 texel;
+uniform int fieldMode;
+uniform float U0, maxS, cpMin, cpMax, vortScale;
+in vec2 vUV;
+out vec4 fragColor;
+
+vec3 speedColor(float t){
+  vec3 C0=vec3(5.0,5.0,20.0)/255.0,   C1=vec3(0.0,20.0,120.0)/255.0,  C2=vec3(0.0,60.0,200.0)/255.0;
+  vec3 C3=vec3(0.0,140.0,220.0)/255.0, C4=vec3(0.0,220.0,220.0)/255.0, C5=vec3(0.0,210.0,140.0)/255.0;
+  vec3 C6=vec3(80.0,200.0,0.0)/255.0,  C7=vec3(220.0,210.0,0.0)/255.0, C8=vec3(255.0,120.0,0.0)/255.0, C9=vec3(220.0,20.0,0.0)/255.0;
+  t=clamp(t,0.0,1.0);
+  float f=t*9.0; int i=int(floor(f)); if(i>8)i=8; if(i<0)i=0; float u=f-float(i);
+  if(i==0) return mix(C0,C1,u); if(i==1) return mix(C1,C2,u); if(i==2) return mix(C2,C3,u); if(i==3) return mix(C3,C4,u);
+  if(i==4) return mix(C4,C5,u); if(i==5) return mix(C5,C6,u); if(i==6) return mix(C6,C7,u);
+  if(i==7) return mix(C7,C8,u); return mix(C8,C9,u);
+}
+vec3 cpColor(float t){
+  vec3 C0=vec3(20.0,50.0,160.0)/255.0, C1=vec3(40.0,110.0,210.0)/255.0, C2=vec3(100.0,175.0,235.0)/255.0, C3=vec3(190.0,220.0,245.0)/255.0;
+  vec3 C4=vec3(248.0,248.0,248.0)/255.0, C5=vec3(248.0,214.0,140.0)/255.0, C6=vec3(240.0,150.0,60.0)/255.0, C7=vec3(205.0,50.0,25.0)/255.0;
+  t=clamp(t,0.0,1.0);
+  float f=t*7.0; int i=int(floor(f)); if(i>6)i=6; if(i<0)i=0; float u=f-float(i);
+  if(i==0) return mix(C0,C1,u); if(i==1) return mix(C1,C2,u); if(i==2) return mix(C2,C3,u); if(i==3) return mix(C3,C4,u);
+  if(i==4) return mix(C4,C5,u); if(i==5) return mix(C5,C6,u); return mix(C6,C7,u);
+}
+vec3 vortColor(float t){
+  t=clamp(t,-1.0,1.0);
+  if(t<0.0) return mix(vec3(0.06,0.07,0.11),vec3(0.15,0.5,0.98),-t);
+  return mix(vec3(0.06,0.07,0.11),vec3(0.98,0.28,0.18),t);
+}
+
+void main(){
+  float solid=texture(texMask,vUV).r;
+  if(solid>0.5){ fragColor=vec4(0.039,0.043,0.078,1.0); return; }
+  vec4 c=texture(texC,vUV);
+  float rho=c.g, ux=c.b, uy=c.a;
+  vec3 col;
+  if(fieldMode==0){
+    float s=length(vec2(ux,uy))/U0;
+    float t=s/max(maxS*0.92,1e-6);
+    col=speedColor(t);
+  } else if(fieldMode==1){
+    float cp=(rho-1.0)/(1.5*U0*U0);
+    float range=max(cpMax-cpMin,1e-6);
+    float t=(cp-cpMin)/range;
+    col=cpColor(t);
+  } else {
+    vec4 cR=texture(texC,vUV+vec2(texel.x,0.0));
+    vec4 cL=texture(texC,vUV-vec2(texel.x,0.0));
+    vec4 cU=texture(texC,vUV+vec2(0.0,texel.y));
+    vec4 cD=texture(texC,vUV-vec2(0.0,texel.y));
+    float dvydx=(cR.a-cL.a)*0.5;
+    float duxdy=(cU.b-cD.b)*0.5;
+    float vort=dvydx-duxdy;
+    float t=vort/max(U0*vortScale,1e-6);
+    col=vortColor(t);
+  }
+  fragColor=vec4(col,1.0);
+}`;
+
+let stepProg, renderProg;
+let stepU={}, renderU={};
+
+if(glOK){
+  try{
+    stepProg=makeProgram(VS_SRC,STEP_FS_SRC);
+    renderProg=makeProgram(VS_SRC,RENDER_FS_SRC);
+    gl.useProgram(stepProg);
+    ['texA','texB','texC','texMask','texel','gridSize','tau','U0'].forEach(n=>stepU[n]=gl.getUniformLocation(stepProg,n));
+    gl.useProgram(renderProg);
+    ['texC','texMask','texel','fieldMode','U0','maxS','cpMin','cpMax','vortScale'].forEach(n=>renderU[n]=gl.getUniformLocation(renderProg,n));
+  }catch(e){ glOK=false; glErr=e.message; }
+}
+
+function makeFloatTex(w,h,data){
+  const t=gl.createTexture();
+  gl.bindTexture(gl.TEXTURE_2D,t);
+  gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MIN_FILTER,gl.NEAREST);
+  gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MAG_FILTER,gl.NEAREST);
+  gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_WRAP_S,gl.CLAMP_TO_EDGE);
+  gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_WRAP_T,gl.CLAMP_TO_EDGE);
+  gl.texImage2D(gl.TEXTURE_2D,0,gl.RGBA32F,w,h,0,gl.RGBA,gl.FLOAT,data);
+  return t;
+}
+function makeMaskTex(w,h,data){
+  const t=gl.createTexture();
+  gl.bindTexture(gl.TEXTURE_2D,t);
+  gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MIN_FILTER,gl.NEAREST);
+  gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MAG_FILTER,gl.NEAREST);
+  gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_WRAP_S,gl.CLAMP_TO_EDGE);
+  gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_WRAP_T,gl.CLAMP_TO_EDGE);
+  gl.pixelStorei(gl.UNPACK_ALIGNMENT,1);
+  gl.texImage2D(gl.TEXTURE_2D,0,gl.R8,w,h,0,gl.RED,gl.UNSIGNED_BYTE,data);
+  return t;
+}
+function makeFBO(texA,texB,texC){
+  const fbo=gl.createFramebuffer();
+  gl.bindFramebuffer(gl.FRAMEBUFFER,fbo);
+  gl.framebufferTexture2D(gl.FRAMEBUFFER,gl.COLOR_ATTACHMENT0,gl.TEXTURE_2D,texA,0);
+  gl.framebufferTexture2D(gl.FRAMEBUFFER,gl.COLOR_ATTACHMENT1,gl.TEXTURE_2D,texB,0);
+  gl.framebufferTexture2D(gl.FRAMEBUFFER,gl.COLOR_ATTACHMENT2,gl.TEXTURE_2D,texC,0);
+  gl.drawBuffers([gl.COLOR_ATTACHMENT0,gl.COLOR_ATTACHMENT1,gl.COLOR_ATTACHMENT2]);
+  const status=gl.checkFramebufferStatus(gl.FRAMEBUFFER);
+  if(status!==gl.FRAMEBUFFER_COMPLETE) throw new Error('FBO incomplete: '+status);
+  return {fbo,texA,texB,texC};
+}
+
+let sets=null, cur=0, maskTex=null;
+let U0=0.06;
+
+function equilibriumInitData(u0){
+  const w0=4/9,ws=1/9,wd=1/36;
+  function feq(ex,ey,w){
+    const eu=ex*u0, uu=u0*u0;
+    return w*(1+3*eu+4.5*eu*eu-1.5*uu);
+  }
+  const f=[feq(0,0,w0),feq(1,0,ws),feq(0,1,ws),feq(-1,0,ws),feq(0,-1,ws),
+            feq(1,1,wd),feq(-1,1,wd),feq(-1,-1,wd),feq(1,-1,wd)];
+  const n=NX*NY;
+  const dA=new Float32Array(n*4), dB=new Float32Array(n*4), dC=new Float32Array(n*4);
+  for(let i=0;i<n;i++){
+    dA[i*4]=f[0]; dA[i*4+1]=f[1]; dA[i*4+2]=f[2]; dA[i*4+3]=f[3];
+    dB[i*4]=f[4]; dB[i*4+1]=f[5]; dB[i*4+2]=f[6]; dB[i*4+3]=f[7];
+    dC[i*4]=f[8]; dC[i*4+1]=1.0; dC[i*4+2]=u0; dC[i*4+3]=0.0;
+  }
+  return {dA,dB,dC};
+}
+
+function initSim(u0){
+  const {dA,dB,dC}=equilibriumInitData(u0);
+  const setA={t:[makeFloatTex(NX,NY,dA),makeFloatTex(NX,NY,dB),makeFloatTex(NX,NY,dC)]};
+  const setB={t:[makeFloatTex(NX,NY,dA),makeFloatTex(NX,NY,dB),makeFloatTex(NX,NY,dC)]};
+  const fboA=makeFBO(setA.t[0],setA.t[1],setA.t[2]);
+  const fboB=makeFBO(setB.t[0],setB.t[1],setB.t[2]);
+  sets=[fboA,fboB];
+  cur=0;
+}
+
+if(glOK){
+  try{ initSim(U0); }catch(e){ glOK=false; glErr=e.message; }
+}
+
+function bindQuad(prog){
+  gl.useProgram(prog);
+}
+
+function simStep(){
+  const src=sets[cur], dst=sets[1-cur];
+  gl.bindFramebuffer(gl.FRAMEBUFFER,dst.fbo);
+  gl.viewport(0,0,NX,NY);
+  gl.useProgram(stepProg);
+  gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D,src.texA); gl.uniform1i(stepU.texA,0);
+  gl.activeTexture(gl.TEXTURE1); gl.bindTexture(gl.TEXTURE_2D,src.texB); gl.uniform1i(stepU.texB,1);
+  gl.activeTexture(gl.TEXTURE2); gl.bindTexture(gl.TEXTURE_2D,src.texC); gl.uniform1i(stepU.texC,2);
+  gl.activeTexture(gl.TEXTURE3); gl.bindTexture(gl.TEXTURE_2D,maskTex); gl.uniform1i(stepU.texMask,3);
+  gl.uniform2f(stepU.texel,1/NX,1/NY);
+  gl.uniform2i(stepU.gridSize,NX,NY);
+  gl.uniform1f(stepU.tau,TAU);
+  gl.uniform1f(stepU.U0,U0);
+  gl.drawArrays(gl.TRIANGLES,0,3);
+  cur=1-cur;
+}
+
+let fieldMode=0; // 0 speed,1 cp,2 vort
+const VORT_SCALE=0.06;
+
+function renderField(maxS,cpMin,cpMax){
+  gl.bindFramebuffer(gl.FRAMEBUFFER,null);
+  gl.viewport(0,0,NX,NY);
+  gl.useProgram(renderProg);
+  const s=sets[cur];
+  gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D,s.texC); gl.uniform1i(renderU.texC,0);
+  gl.activeTexture(gl.TEXTURE1); gl.bindTexture(gl.TEXTURE_2D,maskTex); gl.uniform1i(renderU.texMask,1);
+  gl.uniform2f(renderU.texel,1/NX,1/NY);
+  gl.uniform1i(renderU.fieldMode,fieldMode);
+  gl.uniform1f(renderU.U0,U0);
+  gl.uniform1f(renderU.maxS,maxS);
+  gl.uniform1f(renderU.cpMin,cpMin);
+  gl.uniform1f(renderU.cpMax,cpMax);
+  gl.uniform1f(renderU.vortScale,VORT_SCALE);
+  gl.drawArrays(gl.TRIANGLES,0,3);
+}
+
+const macro=new Float32Array(NX*NY*4);
+function readMacro(){
+  gl.bindFramebuffer(gl.FRAMEBUFFER,sets[cur].fbo);
+  gl.readBuffer(gl.COLOR_ATTACHMENT2);
+  gl.readPixels(0,0,NX,NY,gl.RGBA,gl.FLOAT,macro);
+}
+
+// ================= geometry / mask state =================
+
+let sol=null; // {xp,yp,xm,ym,nx,ny,pl,IN,aDeg}
+let shapeKey='naca2412';
+
+function buildGeometry(shapeKeyArg,aDeg){
+  // Use injected user coordinates if available, else fall back to built-in shapes
+  const base = (typeof USER_COORDS !== 'undefined' && USER_COORDS.length > 0)
+    ? USER_COORDS
+    : SHAPES[shapeKeyArg]();
+  const coords=rotate(base,aDeg);
+  const{xp,yp}=panelise(coords);
+  const xm=[],ym=[],nx=[],ny=[],pl=[];
+  for(let i=0;i<NP;i++){
+    xm.push((xp[i]+xp[i+1])/2);
+    ym.push((yp[i]+yp[i+1])/2);
+    const dx=xp[i+1]-xp[i],dy=yp[i+1]-yp[i];
+    const L=Math.hypot(dx,dy)+1e-14;
+    pl.push(L);
+    nx.push(-dy/L); ny.push(dx/L);
+  }
+  const IN=rasterMask(xp,yp);
+  return{xp,yp,xm,ym,nx,ny,pl,IN,aDeg};
+}
+
+function applyGeometry(shapeKeyArg,aDeg){
+  sol=buildGeometry(shapeKeyArg,aDeg);
+  if(glOK){
+    if(maskTex) gl.deleteTexture(maskTex);
+    maskTex=makeMaskTex(NX,NY,sol.IN);
+  }
+  document.getElementById('av2').textContent=aDeg.toFixed(1)+'\u00b0';
+}
+
+// ================= field arrays for particle sampling / stats =================
+
+const Ufield=new Float32Array(NX*NY);
+const Vfield=new Float32Array(NX*NY);
+const CpField=new Float32Array(NX*NY);
+let maxS=0.6, cpMin=-1, cpMax=1, maxVort=1;
+let statCounter=0;
+
+function updateFieldsFromMacro(){
+  const IN=sol.IN;
+  let mx=0, cMin=Infinity, cMax=-Infinity;
+  for(let idx=0;idx<NX*NY;idx++){
+    if(IN[idx]){ Ufield[idx]=NaN; Vfield[idx]=NaN; CpField[idx]=NaN; continue; }
+    const o=idx*4;
+    const rho=macro[o+1], ux=macro[o+2], uy=macro[o+3];
+    const u=ux/U0, v=uy/U0;
+    Ufield[idx]=u; Vfield[idx]=v;
+    const cp=(rho-1)/(1.5*U0*U0);
+    CpField[idx]=cp;
+    const s=Math.hypot(u,v);
+    if(s>mx&&s<4) mx=s;
+    if(cp>-4&&cp<1.2){ if(cp<cMin)cMin=cp; if(cp>cMax)cMax=cp; }
+  }
+  if(mx>0) maxS=mx;
+  if(isFinite(cMin)) cpMin=cMin;
+  if(isFinite(cMax)) cpMax=cMax;
+}
+
+function sampleScalar(field,wx,wy){
+  if(wx<DX0||wx>DX1||wy<DY0||wy>DY1) return null;
+  const fx=(wx-DX0)/(DX1-DX0)*NX-0.5;
+  const fy=(wy-DY0)/(DY1-DY0)*NY-0.5;
+  const ix=Math.max(0,Math.min(Math.floor(fx),NX-2));
+  const iy=Math.max(0,Math.min(Math.floor(fy),NY-2));
+  const tx=fx-ix,ty=fy-iy;
+  const i00=iy*NX+ix,i10=i00+1,i01=i00+NX,i11=i01+1;
+  const IN=sol.IN;
+  const ws=[(1-tx)*(1-ty),tx*(1-ty),(1-tx)*ty,tx*ty];
+  const is=[i00,i10,i01,i11];
+  let s=0,w=0;
+  for(let k=0;k<4;k++){
+    if(!IN[is[k]]&&isFinite(field[is[k]])){s+=field[is[k]]*ws[k];w+=ws[k];}
+  }
+  return w>0?s/w:null;
+}
+
+function sampleUV(wx,wy){
+  const u=sampleScalar(Ufield,wx,wy);
+  const v=sampleScalar(Vfield,wx,wy);
+  if(u===null||v===null) return null;
+  return[u,v];
+}
+
+let CLsmooth=null, CDsmooth=null, sepFrac=0;
+// Integrates pressure directly over the solver's own staircase solid mask
+// (fluid/solid cell face adjacency), matching the reference Go computeForce():
+// p = rho/3 (lattice EOS), force applied at each fluid-solid face, direction
+// pointing from the fluid cell into the solid neighbor. This uses the same
+// discretized boundary the LBM step actually enforces, unlike sampling Cp off
+// the smooth mathematical airfoil curve (which drifts from the rasterized mask
+// on a coarse grid and was producing near-zero CL/CD even during obvious stall).
+const FACE_DX=[1,0,-1,0], FACE_DY=[0,1,0,-1];
+function computeForces(){
+  const IN=sol.IN;
+  let fx=0,fy=0,any=false;
+  for(let y=0;y<NY;y++){
+    for(let x=0;x<NX;x++){
+      const c=y*NX+x;
+      if(!IN[c]) continue; // only solid cells contribute faces
+      for(let j=0;j<4;j++){
+        const xn=x+FACE_DX[j], yn=y+FACE_DY[j];
+        if(xn<0||xn>=NX||yn<0||yn>=NY) continue;
+        const nc=yn*NX+xn;
+        if(IN[nc]) continue; // need a fluid neighbor
+        any=true;
+        const rho=macro[nc*4+1];
+        const p=rho/3;
+        // Force on the body points from the fluid cell into the solid, i.e.
+        // along (-FACE_DX[j],-FACE_DY[j]) relative to the fluid cell (nc->c).
+        fx += p*(-FACE_DX[j]);
+        fy += p*(-FACE_DY[j]);
+      }
+    }
+  }
+  if(!any) return;
+  // Nondimensionalize like a standard force coefficient: F/(0.5*rho0*U0^2*chord),
+  // with chord expressed in lattice cells (CHORD_L) since fx/fy are summed in
+  // lattice pressure units over lattice-cell faces (unit length in lattice units).
+  const q=0.5*U0*U0*CHORD_L;
+  const CLraw=fy/q, CDraw=fx/q;
+  CLsmooth = CLsmooth===null? CLraw : CLsmooth*0.9+CLraw*0.1;
+  CDsmooth = CDsmooth===null? CDraw : CDsmooth*0.9+CDraw*0.1;
+
+  // Separation fraction: fraction of surface-adjacent fluid cells where
+  // streamwise velocity (ux) is negative — reversed flow indicates separation.
+  // Matches Go's Sep computation in computeForce().
+  let surf=0, rev=0;
+  for(let y=0;y<NY;y++){
+    for(let x=0;x<NX;x++){
+      const c=y*NX+x;
+      if(!IN[c]) continue;
+      for(let j=0;j<4;j++){
+        const xn=x+FACE_DX[j], yn=y+FACE_DY[j];
+        if(xn<0||xn>=NX||yn<0||yn>=NY) continue;
+        const nc=yn*NX+xn;
+        if(IN[nc]) continue;
+        surf++;
+        if(macro[nc*4+2]<0) rev++; // ux < 0 = reversed flow
+      }
+    }
+  }
+  sepFrac = surf>0 ? sepFrac*0.85 + (rev/surf)*0.15 : sepFrac;
+}
+
+// ================= colour maps for the 2D-canvas colour bar =================
+
+function lerpScale(t,S){
+  t=Math.max(0,Math.min(1,t));
+  const f=t*(S.length-1);
+  const i=Math.min(Math.floor(f),S.length-2);
+  const u=f-i;
+  return[S[i][0]*(1-u)+S[i+1][0]*u,S[i][1]*(1-u)+S[i+1][1]*u,S[i][2]*(1-u)+S[i+1][2]*u];
+}
+const SPEED_SCALE=[[5,5,20],[0,20,120],[0,60,200],[0,140,220],[0,220,220],[0,210,140],[80,200,0],[220,210,0],[255,120,0],[220,20,0]];
+const CP_SCALE=[[20,50,160],[40,110,210],[100,175,235],[190,220,245],[248,248,248],[248,214,140],[240,150,60],[205,50,25]];
+function cmap(t){return lerpScale(t,SPEED_SCALE);}
+function cmapCp(t){return lerpScale(t,CP_SCALE);}
+function cmapVort(t){
+  t=Math.max(-1,Math.min(1,t));
+  if(t<0) return lerpScale(-t,[[15,18,28],[38,128,250]]);
+  return lerpScale(t,[[15,18,28],[250,71,46]]);
+}
+
+// ================= particle trail system =================
+// Recycling/seeding now mirrors particles.go: tracers stuck in a recirculation
+// bubble are force-respawned immediately (not left to drift until their life
+// timer runs out), and spawn density is biased toward the body's center band
+// so smoke concentrates where it's most informative, same as Go's seedY().
+
+let parts=[];
+let NPART=2600;
+
+function spawn(edge,lane){
+  if(lane===undefined)lane=DY0+Math.random()*(DY1-DY0);
+  if(edge||Math.random()<0.82){
+    return{x:DX0+0.001,y:lane,life:220+Math.random()*300,lane};
+  }
+  return{x:DX0+Math.random()*(DX1-DX0),y:DY0+Math.random()*(DY1-DY0),life:150+Math.random()*250,lane};
+}
+function initParts(){
+  parts=[];
+  for(let i=0;i<NPART;i++){
+    let lane;
+    if(Math.random()<0.35){
+      // Centre +- (domain height)/6, echoing Go's seedY() centre-band bias.
+      const c=(DY0+DY1)/2, half=(DY1-DY0)/6;
+      lane=c+(Math.random()-0.5)*2*half;
+    }else{
+      lane=DY0+((i+0.5)/NPART)*(DY1-DY0)+(Math.random()-0.5)*0.003;
+    }
+    const p=spawn(true,lane);
+    p.life*=Math.random();
+    p.x=DX0+Math.random()*(DX1-DX0)*0.95;
+    parts.push(p);
+  }
+}
+function advect(p,dtFrame){
+  const kBase=0.00105*dtFrame; // tuned to ~3 lattice cells/frame at freestream, matching Kutta's dt
+  const uv1=sampleUV(p.x,p.y);
+  if(!uv1)return null;
+  const[u1,v1]=uv1;
+  const speed1=Math.hypot(u1,v1);
+  let dtEff=kBase;
+  const maxDisp=0.05; // raised to match Kutta's uncapped fast-region streaks
+  if(speed1*dtEff>maxDisp)dtEff=maxDisp/Math.max(speed1,1e-6);
+  const midx=p.x+u1*dtEff*0.5,midy=p.y+v1*dtEff*0.5;
+  const uv2=sampleUV(midx,midy)||uv1;
+  const[u2,v2]=uv2;
+  return{nx:p.x+u2*dtEff,ny:p.y+v2*dtEff,speed:Math.hypot(u2,v2)};
+}
+// Stall threshold: below this speed the particle is in a recirculation zone.
+// Instead of instant kill, drain life faster so the particle traces the slow
+// swirling recirculation for a while before fading — keeping the wake vortex
+// visible. STALL_DRAIN is tuned so a stalled particle survives ~2-3 seconds
+// of recirculation before respawning.
+// Stall threshold matched to Kutta's raw lattice-unit check ux²+uy²<1e-8.
+// sampleUV returns velocity normalized by U0, so the equivalent threshold
+// in normalized units is 1e-8/U0² ≈ 2.8e-6 at U0=0.06. We use 3e-6 as a
+// round number — same physical condition, just expressed in normalized speed.
+const STALL_SPEED2=3e-6;
+const STALL_DRAIN=0.18; // extra life drain per dt tick when stalled
+
+function stepParticles(dt){
+  pctx.globalCompositeOperation='destination-out';
+  pctx.fillStyle='rgba(0,0,0,0.055)';
+  pctx.fillRect(0,0,W,H);
+  pctx.globalCompositeOperation='source-over';
+  pctx.lineCap='round';
+  for(let i=0;i<parts.length;i++){
+    const p=parts[i];
+    const adv=advect(p,dt);
+    const stalled = adv!==null && (adv.speed*adv.speed<STALL_SPEED2);
+    // Stalled particles drain faster but stay visible long enough to trace
+    // the recirculation bubble before fading out — not instantly killed.
+    p.life -= dt * (stalled ? STALL_DRAIN : 0.06);
+    if(!adv||p.life<=0){parts[i]=spawn(true,p.lane);continue;}
+    const{nx,ny,speed}=adv;
+    const cx1=w2cX(p.x),cy1=w2cY(p.y);
+    const cx2b=w2cX(nx),cy2b=w2cY(ny);
+    const t=Math.min(speed/(maxS*0.92),1);
+    const[r,g,b]=cmap(t);
+    const lum=0.55+t*0.45;
+    pctx.strokeStyle=`rgba(${Math.round(r*0.4+255*0.6*lum)},${Math.round(g*0.4+255*0.6*lum)},${Math.round(b*0.4+255*0.6*lum)},0.75)`;
+    pctx.lineWidth=1.1;
+    pctx.beginPath();
+    pctx.moveTo(cx1,cy1);
+    pctx.lineTo(cx2b,cy2b);
+    pctx.stroke();
+    p.x=nx;p.y=ny;
+  }
+}
+
+function w2cX(x){return PX+(x-DX0)/(DX1-DX0)*PW;}
+function w2cY(y){return PY+(1-(y-DY0)/(DY1-DY0))*PH;}
+
+// ================= drawing (mostly unchanged from the original) =================
+
+function drawFoil(){
+  const{xp,yp}=sol;
+  cx2.beginPath();
+  for(let i=0;i<xp.length;i++){
+    const px=w2cX(xp[i]),py=w2cY(yp[i]);
+    i===0?cx2.moveTo(px,py):cx2.lineTo(px,py);
+  }
+  cx2.closePath();
+  cx2.fillStyle='#0d1018';
+  cx2.fill();
+  cx2.strokeStyle='rgba(200,215,255,0.85)';
+  cx2.lineWidth=1.4;
+  cx2.stroke();
+}
+
+function drawBar(){
+  const bx=W-32,by=PY,bw=10,bh=PH;
+  for(let i=0;i<bh;i++){
+    let r,g,b;
+    if(fieldMode===1)[r,g,b]=cmapCp(1-i/bh);
+    else if(fieldMode===2)[r,g,b]=cmapVort(1-2*i/bh);
+    else [r,g,b]=cmap(1-i/bh); // colorbar gradient: top=fast(red), bottom=slow(navy)
+    cx2.fillStyle=`rgb(${r|0},${g|0},${b|0})`;
+    cx2.fillRect(bx,by+i,bw,1.5);
+  }
+  cx2.fillStyle='rgba(255,255,255,0.55)';
+  cx2.font='10px system-ui';
+  cx2.textAlign='left';
+  const top = fieldMode===1?'+Cp':(fieldMode===2?'CCW':'fast');
+  const bot = fieldMode===1?'-Cp':(fieldMode===2?'CW':'slow');
+  cx2.fillText(top,bx+bw+3,by+9);
+  cx2.fillText(bot,bx+bw+3,by+bh-1);
+}
+
+function drawLabels(){
+  cx2.fillStyle='rgba(255,255,255,0.4)';
+  cx2.font='10px system-ui';
+  cx2.textAlign='center';
+  for(const xv of[0,0.5,1.0]) cx2.fillText(xv.toFixed(1),w2cX(xv),H-8);
+  cx2.textAlign='right';
+  for(const yv of[-0.4,0,0.4]) cx2.fillText(yv.toFixed(1),PX-6,w2cY(yv)+3);
+  cx2.fillStyle='rgba(255,255,255,0.75)';
+  cx2.font='12px system-ui';
+  cx2.textAlign='left';
+  cx2.fillText(`\u03b1 = ${sol.aDeg.toFixed(1)}\u00b0`,PX+8,PY+16);
+}
+
+function updateStatsUI(){
+  document.getElementById('clv2').textContent = CLsmooth===null?'\u2014':CLsmooth.toFixed(3);
+  document.getElementById('cdv2').textContent = CDsmooth===null?'\u2014':Math.max(CDsmooth,0).toFixed(3);
+  const Re = U0*CHORD_L/NU_L;
+  document.getElementById('rev2').textContent = Math.round(Re).toLocaleString();
+
+  // Separation / stall indicator
+  const sepPct = Math.round(sepFrac*100);
+  const sepEl = document.getElementById('sepv2');
+  const sepCard = document.getElementById('sep-card');
+  if(sepPct < 5){
+    sepEl.textContent = 'Attached';
+    sepCard.style.borderColor = '#2a3050';
+    sepEl.style.color = '#4ade80'; // green
+  } else if(sepPct < 25){
+    sepEl.textContent = sepPct+'% sep';
+    sepCard.style.borderColor = '#854d0e';
+    sepEl.style.color = '#facc15'; // yellow
+  } else {
+    sepEl.textContent = 'STALL \u2248 '+sepPct+'% sep';
+    sepCard.style.borderColor = '#991b1b';
+    sepEl.style.color = '#f87171'; // red
+  }
+}
+
+function drawFallback(){
+  cx2.fillStyle='#0a0d18';
+  cx2.fillRect(0,0,W,H);
+  cx2.fillStyle='rgba(255,255,255,0.7)';
+  cx2.font='13px system-ui';
+  cx2.textAlign='center';
+  cx2.fillText('WebGL2 with floating-point render targets is required for this demo.',W/2,H/2-8);
+  cx2.font='11px system-ui';
+  cx2.fillStyle='rgba(255,255,255,0.45)';
+  cx2.fillText(glErr||'Your browser or device does not support it.',W/2,H/2+12);
+}
+
+// ================= main loop =================
+
+let lastT=null;
+function frame(t){
+  const dt=lastT?Math.min(t-lastT,40):16;
+  lastT=t;
+
+  if(!glOK){ drawFallback(); requestAnimationFrame(frame); return; }
+
+  for(let s=0;s<STEPS_PER_FRAME;s++) simStep();
+  renderField(maxS,cpMin,cpMax);
+  readMacro();
+  updateFieldsFromMacro();
+
+  statCounter++;
+  if(statCounter%3===0) computeForces();
+  if(statCounter%10===0) updateStatsUI();
+
+  stepParticles(dt);
+
+  cx2.fillStyle='#0a0d18';
+  cx2.fillRect(0,0,W,H);
+  cx2.imageSmoothingEnabled=true;
+  cx2.imageSmoothingQuality='high';
+  cx2.drawImage(glcv,PX,PY,PW,PH);
+  cx2.drawImage(pcv,0,0);
+  drawFoil();
+  drawBar();
+  drawLabels();
+
+  requestAnimationFrame(frame);
+}
+
+// ================= UI wiring =================
+
+let debounce=null;
+function onGeometryChange(newShape,newAngle){
+  clearTimeout(debounce);
+  debounce=setTimeout(()=>{
+    shapeKey=newShape;
+    applyGeometry(shapeKey,newAngle);
+  },35);
+}
+
+document.getElementById('as2').addEventListener('input',function(){
+  const a=parseFloat(this.value);
+  document.getElementById('av2').textContent=a.toFixed(1)+'\u00b0';
+  onGeometryChange(shapeKey,a);
+});
+
+// Airfoil selector removed — geometry is injected from Python.
+// Keeping a no-op so nothing breaks if this line is ever re-added.
+
+document.getElementById('fd2').addEventListener('change',function(){
+  fieldMode = this.value==='cp'?1:(this.value==='vort'?2:0);
+});
+
+document.getElementById('us2').addEventListener('input',function(){
+  U0=parseInt(this.value)/1000;
+  document.getElementById('uv2').textContent=U0.toFixed(3);
+});
+
+document.getElementById('ps2').addEventListener('input',function(){
+  const n=parseInt(this.value);
+  document.getElementById('pv2').textContent=n;
+  NPART=n;
+  while(parts.length>n)parts.pop();
+  while(parts.length<n)parts.push(spawn(false));
+});
+
+if(glOK){
+  applyGeometry(shapeKey,6);
+  initParts();
+} else {
+  sol={xp:[0.25],yp:[0],xm:[0.25],ym:[0],nx:[0],ny:[1],pl:[0],IN:new Uint8Array(1),aDeg:6};
+}
+requestAnimationFrame(frame);
+
+// ── PNG capture ──────────────────────────────────────────────────────────────
+// Composite the WebGL field canvas + particle canvas + foil/labels into a
+// single offscreen canvas and download it as a PNG.
+document.getElementById('png-btn').addEventListener('click',function(){
+  const out=document.createElement('canvas');
+  out.width=W; out.height=H;
+  const oc=out.getContext('2d');
+  // dark background
+  oc.fillStyle='#0a0d18';
+  oc.fillRect(0,0,W,H);
+  // WebGL field (already composited onto cv via drawImage in frame())
+  oc.drawImage(cv,0,0);
+  // filename: airfoil name + AOA
+  const aoa=parseFloat(document.getElementById('as2').value).toFixed(1);
+  const name=(typeof USER_NAME!=='undefined'&&USER_NAME?USER_NAME:'airfoil').replace(/\s+/g,'_');
+  const fname=`${name}_alpha${aoa}deg_lbm.png`;
+  out.toBlob(blob=>{
+    const a=document.createElement('a');
+    a.href=URL.createObjectURL(blob);
+    a.download=fname;
+    a.click();
+    URL.revokeObjectURL(a.href);
+  },'image/png');
+});
+
+})();
+</script>
