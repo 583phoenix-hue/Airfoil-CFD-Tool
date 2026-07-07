@@ -3,12 +3,13 @@ message: "If you use this software, please cite it as below."
 type: software
 title: "AeroLab: A Web-Based Airfoil Aerodynamic Analysis Tool"
 authors:
-  - family-names: Pranav
-    given-names: Nathan
+  - family-names: Nathan
+    given-names: Pranav
+    orcid: https://orcid.org/0009-0005-4120-635X
 repository-code: https://github.com/583phoenix-hue/Airfoil-CFD-Tool
 url: https://aerolab-app.onrender.com/
 license: AGPL-3.0
-version: v1.0.0
-doi: 10.5281/zenodo.20740325
-date-released: 2026-06-18
-abstract: "A free, browser-based aerodynamic analysis tool wrapping the XFOIL panel method solver, with a robust .dat coordinate file parser and independent potential flow visualisation."
+version: v1.1.0
+doi: 10.5281/zenodo.21231849
+date-released: 2026-07-07
+abstract: "A free, browser-based aerodynamic analysis tool wrapping the XFOIL panel method solver, featuring a robust airfoil coordinate file parser with automatic Lednicer-to-Selig format conversion, and an interactive GPU-accelerated D2Q9 Lattice-Boltzmann wind tunnel for real-time flow visualisation."
