@@ -14,7 +14,6 @@ AeroLab is a free, browser-based aerodynamic analysis tool built on the industry
 
 - **Robust `.dat` file parser** — automatically handles Selig and Lednicer coordinate formats, corrects winding order, removes duplicate leading/trailing edge points, and resolves common formatting errors that cause stock XFOIL to reject files
 - **Interactive wind tunnel** — real-time GPU-accelerated D2Q9 Lattice-Boltzmann flow visualisation with live angle of attack control, velocity/pressure/vorticity field modes, stall indicator, and PNG export
-- **Boundary layer overlay** — displacement thickness envelope (δ*) and laminar-to-turbulent transition locations parsed from XFOIL viscous DUMP output
 - **Three-strategy solver** — viscous → viscous with geometry smoothing → inviscid fallback, ensuring a result is returned even for difficult airfoil geometries
 - **No installation required** — runs entirely in the browser; users paste coordinates and input Reynolds number and angle of attack
 
