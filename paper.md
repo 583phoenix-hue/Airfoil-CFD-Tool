@@ -65,7 +65,7 @@ The component provides real-time interactive controls: an angle of attack slider
 
 # Research Impact Statement
 
-AeroLab lowers the barrier to entry for airfoil aerodynamic analysis by eliminating the two most common friction points for new users: coordinate file incompatibility and the absence of flow visualisation. A benchmark study across 1,000 airfoil coordinate files from the UIUC Airfoil Coordinate Database demonstrates that AeroLab's coordinate parser increases XFOIL analysis success rates from 22.5% (raw XFOIL) to 85.7%, rescuing 633 files through automatic format detection and repair [@Pranav2026benchmark]. The tool is freely accessible at https://aerolab.me and is intended for use in aerodynamics education and early-stage research, particularly for users without access to commercial CFD software.
+AeroLab lowers the barrier to entry for airfoil aerodynamic analysis by eliminating the two most common friction points for new users: coordinate file incompatibility and the absence of flow visualisation. The parser has been validated against 1,000 airfoil files from the UIUC database, with full benchmark methodology and results reported separately [@Pranav2026benchmark]. The tool is freely accessible at https://aerolab-app.onrender.com and is intended for use in aerodynamics education and early-stage research, particularly for users without access to commercial CFD software.
 
 # AI Usage Disclosure
 
