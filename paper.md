@@ -10,7 +10,7 @@ tags:
   - computational fluid dynamics
   - education
 authors:
-  - name: Nathan Pranav
+  - name: Pranav Nathan 
     orcid: 0009-0005-4120-635X
     affiliation: 1
 affiliations:
