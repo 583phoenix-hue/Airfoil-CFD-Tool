@@ -145,7 +145,7 @@ Common issues corrected automatically:
 
 ## Acknowledgements
 
-AeroLab is built on [XFOIL](https://web.mit.edu/drela/Public/web/xfoil/) by Professor Mark Drela (MIT), the industry-standard low Reynolds number airfoil analysis code.
+AeroLab is built on [XFOIL](https://web.mit.edu/drela/Public/web/xfoil/) by Professor Mark Drela (MIT), the industry-standard low Reynolds number airfoil analysis code. The interactive wind tunnel is adapted from the [Kutta](https://github.com/crgimenes/kutta) open-source LBM flow visualiser by Cesar Gimenes (MIT License).
 
 ---
 
