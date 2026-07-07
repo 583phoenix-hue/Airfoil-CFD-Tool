@@ -1,11 +1,12 @@
 ---
-title: 'AeroLab: A Web-Based Airfoil Aerodynamic Analysis Tool with Robust Coordinate Parsing and Potential Flow Visualisation'
+title: 'AeroLab: A Web-Based Airfoil Aerodynamic Analysis Tool with Robust Coordinate Parsing and Interactive Flow Visualisation'
 tags:
   - Python
   - aerodynamics
   - airfoil
   - XFOIL
   - panel method
+  - lattice-boltzmann
   - computational fluid dynamics
   - education
 authors:
@@ -21,9 +22,9 @@ bibliography: paper.bib
 
 # Summary
 
-AeroLab is a free, browser-based aerodynamic analysis tool that wraps the XFOIL panel method solver [@Drela1989] in an accessible web interface. Users supply an airfoil coordinate file, a Reynolds number, and an angle of attack; AeroLab returns lift coefficient (C~L~), drag coefficient (C~D~), pitching moment coefficient (C~m~), pressure distribution (C~p~), and an animated potential flow visualisation — all without installing any software.
+AeroLab is a free, browser-based aerodynamic analysis tool that wraps the XFOIL panel method solver [@Drela1989] in an accessible web interface. Users supply an airfoil coordinate file, a Reynolds number, and an angle of attack; AeroLab returns lift coefficient (C~L~), drag coefficient (C~D~), pitching moment coefficient (C~m~), pressure distribution (C~p~), and an interactive flow visualisation — all without installing any software.
 
-The tool makes two novel contributions beyond simply wrapping XFOIL. First, it implements a robust coordinate parser that automatically resolves the formatting inconsistencies common in publicly available airfoil databases, which stock XFOIL rejects without user intervention. Second, it provides an independent 160-panel vortex panel method implementation for off-body flow field computation and animated visualisation, augmented with boundary layer displacement thickness and laminar-to-turbulent transition data extracted from XFOIL's viscous solution.
+The tool makes two contributions beyond simply wrapping XFOIL. First, it implements a robust coordinate parser that automatically resolves the formatting inconsistencies common in publicly available airfoil databases, which stock XFOIL rejects without user intervention. Second, it integrates an interactive GPU-accelerated D2Q9 Lattice-Boltzmann wind tunnel that visualises flow around the user's actual uploaded airfoil geometry in real time — combining coordinate repair, viscous analysis, and unsteady flow visualisation in a single browser-based workflow requiring no installation.
 
 # Statement of Need
 
@@ -31,13 +32,13 @@ XFOIL [@Drela1989] is the most widely used low Reynolds number airfoil analysis 
 
 **Coordinate file incompatibility.** Airfoil databases such as the UIUC Airfoil Coordinate Database [@Selig1996] and Airfoil Tools distribute coordinates in multiple formats — primarily Selig format (a single contiguous loop from trailing edge, over the upper surface, to the leading edge, and back along the lower surface) and Lednicer format (two separate upper and lower surface sections). Files frequently contain additional issues including incorrect winding order, duplicate leading or trailing edge points, mixed whitespace delimiters, and header lines. Stock XFOIL silently produces incorrect results or crashes entirely when given malformed input, requiring users to manually inspect and correct files before analysis.
 
-**Lack of flow visualisation.** XFOIL outputs tabular coefficient and pressure data but provides no visual representation of the flow field. Understanding the relationship between airfoil geometry, angle of attack, and the surrounding velocity field — including the acceleration over the suction surface and the structure of the boundary layer — is central to aerodynamics education, yet requires additional software to visualise.
+**Lack of flow visualisation.** XFOIL outputs tabular coefficient and pressure data but provides no visual representation of the flow field. Understanding the relationship between airfoil geometry, angle of attack, and the surrounding velocity field — including the acceleration over the suction surface, boundary layer separation, and wake structure — is central to aerodynamics education, yet requires additional software to visualise.
 
 Existing web-based XFOIL interfaces address the accessibility barrier but do not resolve either of these issues. AeroLab addresses both.
 
 # State of the Field
 
-Several tools exist for airfoil aerodynamic analysis, ranging from desktop applications to online interfaces. XFOIL [@Drela1989] itself remains the dominant solver for low Reynolds number analysis but requires local installation and manual coordinate file preparation. XFLR5 provides a graphical interface to XFOIL and extends it to three-dimensional wing analysis, but is a desktop application requiring installation. Web-based wrappers for XFOIL exist (e.g., Airfoil Tools) but do not implement robust coordinate preprocessing, meaning users must still manually resolve file format issues before analysis. None of the existing web-based tools provide animated potential flow visualisation as a built-in feature. AeroLab addresses these gaps by combining automatic coordinate repair, XFOIL-powered viscous analysis, and independent potential flow visualisation in a single browser-based tool requiring no installation.
+Several tools exist for airfoil aerodynamic analysis, ranging from desktop applications to online interfaces. XFOIL [@Drela1989] itself remains the dominant solver for low Reynolds number analysis but requires local installation and manual coordinate file preparation. XFLR5 provides a graphical interface to XFOIL and extends it to three-dimensional wing analysis, but is a desktop application requiring installation. Web-based wrappers for XFOIL exist (e.g., Airfoil Tools) but do not implement robust coordinate preprocessing, meaning users must still manually resolve file format issues before analysis. Interactive LBM flow visualisers such as Kutta exist as standalone tools but are not integrated with coordinate preprocessing pipelines or XFOIL analysis workflows, and operate only on parametric airfoil shapes rather than arbitrary user-supplied geometry. AeroLab addresses these gaps by combining automatic coordinate repair, XFOIL-powered viscous analysis, and an interactive GPU-accelerated LBM wind tunnel operating on the user's actual uploaded airfoil geometry — all in a single browser-based tool requiring no installation.
 
 # Software Design
 
@@ -56,11 +57,11 @@ The backend (`main.py`) exposes a FastAPI endpoint that accepts a coordinate fil
 
 Boundary layer data is extracted from XFOIL's `DUMP` output, which provides arc length, surface coordinates, edge velocity ratio (U~e~/V~∞~), displacement thickness (δ*), momentum thickness (θ), skin friction coefficient (C~f~), and shape factor (H) for upper and lower surfaces. Laminar-to-turbulent transition locations are detected from sharp increases in C~f~ along each surface.
 
-## Potential Flow Visualisation
+## Interactive Wind Tunnel
 
-An independent vortex panel method is implemented in `Airfoil_Analysis.py` (`compute_flow_field`) for flow field visualisation. The method uses N = 160 constant-strength vortex panels with cosine arc-length spacing. The influence matrix is assembled using the standard vortex panel velocity kernel [@Katz2001], with the Kutta condition enforced by replacing the final matrix row with the constraint γ~1~ + γ~N~ = 0. For airfoils where cosine spacing produces an ill-conditioned system (detected by max|γ| > 500), the solver automatically retries with uniform arc-length spacing.
+An interactive flow visualisation is implemented as a WebGL2 component (`airfoil_flow_lbm_aerolab.html`) embedded in the Streamlit frontend via `st.components.v1.html()`. The solver uses the D2Q9 Lattice-Boltzmann Method (LBM) with single-relaxation BGK collision, running entirely on the GPU via GLSL fragment shaders. The user's parsed airfoil coordinates are serialised as a JSON array by the Python backend and injected into the JavaScript component at render time, where they are rasterised onto the LBM grid as a no-slip solid mask using the half-way bounce-back boundary condition. This pipeline means the same coordinate file that the parser repairs and XFOIL analyses is immediately visualised in the interactive wind tunnel — no separate geometry input is required.
 
-The off-body velocity field is computed on a 220 × 220 grid by superimposing the freestream and the vortex panel contributions at each grid point. Interior grid points are masked using matplotlib's `Path.contains_points`. Streamlines are integrated from left-boundary seed points using a first-order Euler scheme with bilinear velocity interpolation. The resulting animation is rendered in Plotly with a matplotlib-generated bicubic-interpolated speed heatmap as a static background layer, enabling smooth colour transitions without per-frame re-rendering.
+The component provides real-time interactive controls: an angle of attack slider (−20° to +25°) that pitches the airfoil geometry while keeping the freestream horizontal, a flow speed slider, and a particle trail density slider. Three field visualisation modes are available — velocity magnitude, pressure coefficient, and vorticity (out-of-plane curl) — rendered as a colour field updated every frame by the GPU. Passive smoke tracer particles are advected through the velocity field using bilinear interpolation, producing streakline visualisations analogous to smoke-wire experiments. A surface separation fraction is computed each frame by counting fluid cells adjacent to the solid body where the streamwise velocity is reversed, providing a qualitative stall indicator. Numerical stability is maintained through macroscopic field clamping (ρ ∈ [0.5, 2.0], |u| ≤ 0.35 U~0~).
 
 # Research Impact Statement
 
@@ -68,10 +69,10 @@ AeroLab lowers the barrier to entry for airfoil aerodynamic analysis by eliminat
 
 # AI Usage Disclosure
 
-Generative AI was used as a coding assistant during the development of AeroLab, such as troubleshooting and test scaffolding. AI assistance was also used for copy-editing during preparation of this manuscript. All AI-assisted outputs were reviewed, validated, and modified by the author. Core design decisions, problem framing, and architectural choices were made by the human author. The author takes full responsibility for all submitted materials.
+Generative AI was used as a coding assistant during the development of AeroLab, including troubleshooting and test scaffolding. AI assistance was also used for copy-editing during preparation of this manuscript. All AI-assisted outputs were reviewed, validated, and modified by the author. Core design decisions, problem framing, and architectural choices were made by the human author. The author takes full responsibility for all submitted materials.
 
 # Acknowledgements
 
-AeroLab is built on XFOIL, developed by Professor Mark Drela at MIT. The author thanks the maintainers of the UIUC Airfoil Coordinate Database for providing the reference airfoil data used in testing.
+AeroLab is built on XFOIL, developed by Professor Mark Drela at MIT. The interactive wind tunnel component builds on the D2Q9 LBM approach demonstrated in the Kutta open-source flow visualiser. The author thanks the maintainers of the UIUC Airfoil Coordinate Database for providing the reference airfoil data used in testing.
 
 # References
