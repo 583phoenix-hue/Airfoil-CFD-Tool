@@ -905,6 +905,13 @@ with right_col:
                 prog.progress(100, text="✅ Batch complete!")
                 status_txt.empty()
 
+                n_converged_batch = sum(1 for r in batch_rows if r["Status"] == "✅ Converged")
+                if n_converged_batch > 0:
+                    for _ in range(n_converged_batch):
+                        new_count = increment_analysis_count()
+                    if new_count:
+                        st.toast(f"✅ {n_converged_batch} analyses completed! (Total: #{new_count:,})", icon="🎉")
+
                 st.session_state.batch_results = batch_rows
                 st.session_state.batch_params = {
                     'reynolds': reynolds,
@@ -962,6 +969,13 @@ with right_col:
 
                 prog.progress(100, text="✅ Sweep complete!")
                 status_txt.empty()
+
+                n_converged_sweep = sum(1 for r in sweep_rows if r["Status"] == "✅ Converged")
+                if n_converged_sweep > 0:
+                    for _ in range(n_converged_sweep):
+                        new_count = increment_analysis_count()
+                    if new_count:
+                        st.toast(f"✅ {n_converged_sweep} sweep steps completed! (Total: #{new_count:,})", icon="🎉")
 
                 # Store first converged result for geometry/parser display
                 first_result = None
@@ -1079,8 +1093,9 @@ with right_col:
             st.subheader("📈 Download Polar Plots")
             try:
                 import io as _io
-                import plotly.graph_objects as go
-                import plotly.io as pio
+                import matplotlib
+                matplotlib.use("Agg")
+                import matplotlib.pyplot as plt
 
                 cl_vals = pd.to_numeric(converged["CL"], errors='coerce')
                 cd_vals = pd.to_numeric(converged["CD"], errors='coerce')
@@ -1089,34 +1104,36 @@ with right_col:
                 aoa_vals = converged["α (°)"]
 
                 plots = {
-                    "CL_vs_AOA": (aoa_vals, cl_vals, "α (°)", "CL", "CL vs Angle of Attack"),
-                    "CD_vs_AOA": (aoa_vals, cd_vals, "α (°)", "CD", "CD vs Angle of Attack"),
-                    "CM_vs_AOA": (aoa_vals, cm_vals, "α (°)", "Cm", "Cm vs Angle of Attack"),
-                    "CL_vs_CD":  (cd_vals,  cl_vals, "CD",    "CL", "Drag Polar (CL vs CD)"),
-                    "LD_vs_AOA": (aoa_vals, ld_vals, "α (°)", "L/D", "L/D vs Angle of Attack"),
+                    "CL_vs_AOA": (aoa_vals, cl_vals, "Angle of Attack α (°)", "Lift Coefficient CL", "CL vs Angle of Attack"),
+                    "CD_vs_AOA": (aoa_vals, cd_vals, "Angle of Attack α (°)", "Drag Coefficient CD", "CD vs Angle of Attack"),
+                    "CM_vs_AOA": (aoa_vals, cm_vals, "Angle of Attack α (°)", "Pitching Moment Cm", "Cm vs Angle of Attack"),
+                    "CL_vs_CD":  (cd_vals,  cl_vals, "Drag Coefficient CD",   "Lift Coefficient CL", "Drag Polar"),
+                    "LD_vs_AOA": (aoa_vals, ld_vals, "Angle of Attack α (°)", "Lift-to-Drag Ratio L/D", "L/D vs Angle of Attack"),
                 }
 
                 dl_cols = st.columns(len(plots))
+                airfoil_label = sp['filename'].replace(".dat", "")
+
                 for col, (name, (xd, yd, xl, yl, title)) in zip(dl_cols, plots.items()):
-                    fig = go.Figure()
-                    fig.add_trace(go.Scatter(
-                        x=xd, y=yd, mode='lines+markers',
-                        line=dict(color='#667eea', width=2),
-                        marker=dict(size=6)
-                    ))
-                    fig.update_layout(
-                        title=title, xaxis_title=xl, yaxis_title=yl,
-                        plot_bgcolor='white', height=400, width=600,
-                        font=dict(family="Arial", size=13),
-                    )
-                    fig.update_xaxes(showgrid=True, gridcolor='lightgray')
-                    fig.update_yaxes(showgrid=True, gridcolor='lightgray')
-                    img_bytes = pio.to_image(fig, format="png", scale=2)
+                    fig, ax = plt.subplots(figsize=(6, 4), dpi=150)
+                    ax.plot(xd, yd, color='#667eea', linewidth=2,
+                            marker='o', markersize=4, markerfacecolor='#667eea')
+                    ax.set_xlabel(xl, fontsize=11)
+                    ax.set_ylabel(yl, fontsize=11)
+                    ax.set_title(f"{title}\n{airfoil_label} | Re = {sp['reynolds']:,}", fontsize=11)
+                    ax.grid(True, linestyle='--', alpha=0.5, color='gray')
+                    ax.spines['top'].set_visible(False)
+                    ax.spines['right'].set_visible(False)
+                    fig.tight_layout()
+                    buf = _io.BytesIO()
+                    fig.savefig(buf, format="png", dpi=150, bbox_inches='tight')
+                    plt.close(fig)
+                    buf.seek(0)
                     with col:
                         st.download_button(
-                            label=f"⬇️ {yl} vs {xl}",
-                            data=img_bytes,
-                            file_name=f"{sp['filename'].replace('.dat','')}_{name}.png",
+                            label=f"⬇️ {title.split()[0]} vs {xl.split()[0] if 'Attack' not in xl else 'α'}",
+                            data=buf.getvalue(),
+                            file_name=f"{airfoil_label}_{name}.png",
                             mime="image/png",
                             key=f"dl_{name}"
                         )
