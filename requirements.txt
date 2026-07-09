@@ -10,3 +10,4 @@ plotly
 anyio
 slowapi
 psycopg2-binary
+kaleido

@@ -57,29 +57,56 @@ else:
 
 
 def parse_dat_file(file_path: str):
-    """Parse airfoil coordinates from .dat file."""
+    """
+    Parse airfoil coordinates from .dat file.
+    Returns a tuple: (coords, fixes) where fixes is a list of human-readable
+    strings describing each repair applied, for display in the frontend.
+    """
     try:
         with open(file_path, "r") as f:
             lines = f.readlines()
+
+        fixes = []
         data_lines = []
+        skipped_non_coord = 0
+        skipped_out_of_range = 0
+
         for line in lines:
             stripped = line.strip()
             if not stripped:
                 continue
             parts = stripped.split()
             if len(parts) < 2:
+                skipped_non_coord += 1
                 continue
             try:
                 x = float(parts[0])
                 y = float(parts[1])
                 if -0.5 <= x <= 1.5 and -1.0 <= y <= 1.0:
                     data_lines.append([x, y])
+                else:
+                    skipped_out_of_range += 1
             except (ValueError, IndexError):
+                skipped_non_coord += 1
                 continue
+
+        if skipped_non_coord > 0:
+            fixes.append(f"Non-coordinate lines skipped: {skipped_non_coord} header/comment line(s) removed")
+        if skipped_out_of_range > 0:
+            fixes.append(f"Out-of-range points filtered: {skipped_out_of_range} point(s) outside valid bounds removed")
+
         if len(data_lines) < 10:
             raise HTTPException(status_code=400,
                 detail=f"Insufficient valid coordinates. Found {len(data_lines)} points.")
-        return detect_and_merge_sections(data_lines)
+
+        coords, geom_fixes = detect_and_merge_sections(data_lines)
+        fixes.extend(geom_fixes)
+
+        if not fixes:
+            fixes = ["No changes made — file was already in valid Selig format"]
+
+        return coords, fixes
+
     except Exception as e:
         if isinstance(e, HTTPException):
             raise e
@@ -87,37 +114,44 @@ def parse_dat_file(file_path: str):
 
 
 def detect_and_merge_sections(data_lines):
-    """Detect format and merge if needed."""
+    """
+    Detect format and merge if needed.
+    Returns (coords, fixes) where fixes is a list of repair descriptions.
+    """
+    fixes = []
     x_coords = [pt[0] for pt in data_lines]
     section_break = None
     for i in range(1, len(data_lines)):
         if x_coords[i] < 0.01 and x_coords[i-1] > 0.5:
             section_break = i
             break
+
     if section_break is not None:
         upper = data_lines[:section_break]
         lower = data_lines[section_break:]
         logger.debug(f"Lednicer format: {len(upper)} upper, {len(lower)} lower")
+        fixes.append(
+            f"Lednicer format detected and converted: two-section format "
+            f"({len(upper)} upper + {len(lower)} lower points) merged into "
+            f"a single Selig-format loop for XFOIL"
+        )
         # Ensure upper goes LE->TE first, then reverse to TE->LE for XFOIL
         if upper[0][0] > upper[-1][0]:
-            upper = list(reversed(upper))   # was TE->LE, make LE->TE
-        upper = list(reversed(upper))       # now TE->LE (XFOIL winding order)
+            upper = list(reversed(upper))
+        upper = list(reversed(upper))
         # Ensure lower goes LE->TE
         if lower[0][0] > lower[-1][0]:
             lower = list(reversed(lower))
         # Both sections share the LE point (0,0) — remove duplicate from lower
         if lower and abs(lower[0][0]) < 0.001 and abs(lower[0][1]) < 0.001:
             lower = lower[1:]
+            fixes.append("Duplicate leading-edge point removed from Lednicer lower section")
             logger.debug("Removed duplicate LE point from Lednicer lower section")
         merged = upper + lower
     else:
         logger.debug(f"Single section: {len(data_lines)} points")
         if x_coords[0] > 0.99 and x_coords[-1] > 0.99:
             le_idx = x_coords.index(min(x_coords))
-            # In correct Selig order (TE -> upper -> LE -> lower -> TE),
-            # the point BEFORE the LE comes from the upper surface (positive y),
-            # and the point AFTER the LE is on the lower surface (negative y).
-            # So: point_before_le_y > 0 means correct order.
             if le_idx > 0:
                 point_before_le_y = data_lines[le_idx - 1][1]
                 if point_before_le_y > 0:
@@ -126,10 +160,16 @@ def detect_and_merge_sections(data_lines):
                 else:
                     logger.debug("TE-to-TE format, reversing (was TE->lower->LE->upper->TE)")
                     merged = list(reversed(data_lines))
+                    fixes.append(
+                        "Winding order corrected: coordinates were in reversed order "
+                        "(TE→lower→LE→upper→TE) and have been reversed to the correct "
+                        "Selig order (TE→upper→LE→lower→TE)"
+                    )
             else:
                 merged = data_lines
         else:
             merged = data_lines
+
     # NOTE: Do NOT strip a coincident first/last point here.
     # For a Selig-format airfoil the coordinate list is a single closed loop
     # that legitimately starts and ends at the same trailing-edge point
@@ -137,7 +177,7 @@ def detect_and_merge_sections(data_lines):
     # Removing that final point opens the trailing edge, producing a large
     # TE gap that XFOIL reports as a "Blunt trailing edge" and then fails to
     # converge on. XFOIL handles a closed loop correctly, so we keep it.
-    return merged
+    return merged, fixes
 
 
 def extract_aerodynamic_coefficients(stdout: str):
@@ -537,11 +577,11 @@ async def upload_airfoil(
         with open(raw_path, "wb") as f:
             f.write(content)
 
-        raw_coords = parse_dat_file(raw_path)
+        raw_coords, parser_fixes = parse_dat_file(raw_path)
         if len(raw_coords) > MAX_POINTS:
             raise HTTPException(status_code=400, detail=f"Too many points (max {MAX_POINTS})")
 
-        logger.info(f"Parsed: {len(raw_coords)} points")
+        logger.info(f"Parsed: {len(raw_coords)} points, fixes: {parser_fixes}")
 
         with open(fix_path, "w") as f:
             f.write("AIRFOIL\n")
@@ -571,6 +611,7 @@ async def upload_airfoil(
             "cp_values":     cp_values,
             "coefficients":  coefficients,
             "bl_data":       bl_response,
+            "parser_fixes":  parser_fixes,
         }
 
     except HTTPException:

@@ -659,6 +659,18 @@ if 'show_streamlines' not in st.session_state:
     st.session_state.show_streamlines = True
 if 'show_bl' not in st.session_state:
     st.session_state.show_bl = True
+if 'sweep_mode' not in st.session_state:
+    st.session_state.sweep_mode = False
+if 'sweep_results' not in st.session_state:
+    st.session_state.sweep_results = None
+if 'sweep_params' not in st.session_state:
+    st.session_state.sweep_params = None
+if 'batch_mode' not in st.session_state:
+    st.session_state.batch_mode = False
+if 'batch_results' not in st.session_state:
+    st.session_state.batch_results = None
+if 'batch_params' not in st.session_state:
+    st.session_state.batch_params = None
 
 @st.cache_data(ttl=3600, show_spinner=False, max_entries=50)
 def run_xfoil_analysis(file_content: bytes, filename: str, reynolds: float, alpha: float, backend_url: str):
@@ -732,13 +744,48 @@ with left_col:
     st.markdown("<br>", unsafe_allow_html=True)
 
     st.markdown('<p class="param-label">Angle of Attack</p>', unsafe_allow_html=True)
-    alpha = st.slider(
-        "Angle of Attack",
-        min_value=-20.0, max_value=20.0, value=5.0, step=0.5,
-        help="Angle between chord line and freestream",
-        label_visibility="collapsed"
+
+    sweep_mode = st.checkbox(
+        "AOA Sweep",
+        value=st.session_state.sweep_mode,
+        help="Sweep through a range of angles and generate a polar table",
+        disabled=st.session_state.batch_mode
     )
-    st.caption(f"Selected: **{alpha}°**")
+    if sweep_mode != st.session_state.sweep_mode:
+        st.session_state.sweep_mode = sweep_mode
+        st.rerun()
+
+    if not st.session_state.sweep_mode:
+        alpha = st.slider(
+            "Angle of Attack",
+            min_value=-20.0, max_value=20.0, value=5.0, step=0.5,
+            help="Angle between chord line and freestream",
+            label_visibility="collapsed"
+        )
+        st.caption(f"Selected: **{alpha}°**")
+        alpha_start = alpha_end = alpha
+        alpha_step = 1.0
+    else:
+        alpha = None
+        st.caption("Select sweep range:")
+        sweep_range = st.slider(
+            "AOA Range",
+            min_value=-20.0, max_value=20.0, value=(-5.0, 15.0), step=0.5,
+            help="Start and end angle of attack",
+            label_visibility="collapsed"
+        )
+        alpha_start, alpha_end = sweep_range
+        st.caption(f"**{alpha_start}°** to **{alpha_end}°**")
+        alpha_step = st.select_slider(
+            "Step size",
+            options=[0.5, 1.0, 1.5, 2.0, 2.5, 3.0, 3.5, 4.0, 4.5, 5.0],
+            value=1.0,
+            help="Angle increment between each XFOIL run",
+            label_visibility="collapsed"
+        )
+        st.caption(f"Step: **{alpha_step}°**")
+        n_steps = int(round((alpha_end - alpha_start) / alpha_step)) + 1
+        st.caption(f"Total runs: **{n_steps}**")
 
     st.markdown("<br>", unsafe_allow_html=True)
     st.markdown("---")
@@ -766,15 +813,47 @@ with right_col:
     st.markdown('<p class="main-header">✈️ Airfoil Analysis</p>', unsafe_allow_html=True)
     st.markdown('<p class="sub-header">Powered by XFOIL Panel Method</p>', unsafe_allow_html=True)
 
-    uploaded_file = st.file_uploader(
-        "📁 Upload Airfoil .dat File",
-        type="dat",
-        help="Upload a file with airfoil x,y coordinates"
+    # ── Upload mode toggle ────────────────────────────────────────────────
+    batch_mode = st.checkbox(
+        "📦 Batch Upload (up to 10 files)",
+        value=st.session_state.batch_mode,
+        help="Upload multiple airfoil files at once. AOA sweep and visualisations are disabled in batch mode."
     )
+    if batch_mode != st.session_state.batch_mode:
+        st.session_state.batch_mode = batch_mode
+        st.rerun()
 
-    run_analysis = st.button("🚀 Run Analysis", type="primary", disabled=(uploaded_file is None))
+    if st.session_state.batch_mode:
+        uploaded_files = st.file_uploader(
+            "📁 Upload up to 10 Airfoil .dat Files",
+            type="dat",
+            accept_multiple_files=True,
+            help="Upload up to 10 .dat files. Results shown as a table."
+        )
+        if uploaded_files and len(uploaded_files) > 10:
+            st.warning("⚠️ Maximum 10 files allowed. Only the first 10 will be analysed.")
+            uploaded_files = uploaded_files[:10]
+        uploaded_file = None
+        has_upload = bool(uploaded_files)
+    else:
+        uploaded_file = st.file_uploader(
+            "📁 Upload Airfoil .dat File",
+            type="dat",
+            help="Upload a file with airfoil x,y coordinates"
+        )
+        uploaded_files = []
+        has_upload = uploaded_file is not None
 
-    if uploaded_file is not None and run_analysis:
+    if st.session_state.batch_mode:
+        btn_label = "🚀 Run Batch Analysis"
+    elif st.session_state.sweep_mode:
+        btn_label = "🚀 Run Sweep"
+    else:
+        btn_label = "🚀 Run Analysis"
+
+    run_analysis = st.button(btn_label, type="primary", disabled=not has_upload)
+
+    if has_upload and run_analysis:
         backend_url = os.getenv("BACKEND_URL", BACKEND_URL)
 
         if 'analyzing' in st.session_state and st.session_state.analyzing:
@@ -784,28 +863,159 @@ with right_col:
         st.session_state.analyzing = True
 
         try:
-            file_content = uploaded_file.getvalue()
-            with st.spinner("Computing... (30-60s on free tier, instant if cached)"):
-                result = run_xfoil_analysis(
-                    file_content=file_content,
-                    filename=uploaded_file.name,
-                    reynolds=reynolds,
-                    alpha=alpha,
-                    backend_url=backend_url
-                )
+            if st.session_state.batch_mode:
+                # ── Batch Analysis ────────────────────────────────────────
+                files_to_run = uploaded_files[:10]
+                batch_rows = []
+                prog = st.progress(0, text="Starting batch analysis...")
+                status_txt = st.empty()
 
-            new_count = increment_analysis_count()
-            if new_count:
-                st.toast(f"✅ Analysis #{new_count:,} completed!", icon="🎉")
+                for i, f in enumerate(files_to_run):
+                    pct = int((i / len(files_to_run)) * 100)
+                    prog.progress(pct, text=f"Analysing {f.name}... ({pct}% complete, {i+1}/{len(files_to_run)} files)")
+                    status_txt.caption(f"File {i+1} of {len(files_to_run)}: {f.name}")
+                    try:
+                        r = run_xfoil_analysis(
+                            file_content=f.getvalue(),
+                            filename=f.name,
+                            reynolds=reynolds,
+                            alpha=float(alpha) if not st.session_state.sweep_mode else 5.0,
+                            backend_url=backend_url
+                        )
+                        coeffs = r.get("coefficients", {})
+                        cl = coeffs.get("CL", None)
+                        cd = coeffs.get("CD", None)
+                        cm = coeffs.get("Cm", None)
+                        ld = (cl / cd) if (cl is not None and cd and cd != 0) else None
+                        batch_rows.append({
+                            "Airfoil": f.name.replace(".dat", ""),
+                            "CL": round(cl, 4) if cl is not None else "—",
+                            "CD": round(cd, 5) if cd is not None else "—",
+                            "L/D": round(ld, 2) if ld is not None else "—",
+                            "Cm": round(cm, 4) if cm is not None else "—",
+                            "Status": "✅ Converged"
+                        })
+                    except Exception:
+                        batch_rows.append({
+                            "Airfoil": f.name.replace(".dat", ""),
+                            "CL": "—", "CD": "—", "L/D": "—", "Cm": "—",
+                            "Status": "❌ Failed"
+                        })
 
-            st.session_state.results = result
-            st.session_state.last_params = {
-                'reynolds': reynolds,
-                'alpha': alpha,
-                'filename': uploaded_file.name
-            }
-            st.session_state.analyzing = False
-            st.success("✅ Simulation completed successfully!")
+                prog.progress(100, text="✅ Batch complete!")
+                status_txt.empty()
+
+                st.session_state.batch_results = batch_rows
+                st.session_state.batch_params = {
+                    'reynolds': reynolds,
+                    'alpha': alpha if not st.session_state.sweep_mode else 5.0,
+                    'n_files': len(files_to_run)
+                }
+                st.session_state.results = None
+                st.session_state.sweep_results = None
+                st.session_state.analyzing = False
+
+            else:
+                file_content = uploaded_file.getvalue()
+
+            if st.session_state.sweep_mode:
+                # ── AOA Sweep ─────────────────────────────────────────────
+                alphas = [round(alpha_start + i * alpha_step, 2)
+                          for i in range(int(round((alpha_end - alpha_start) / alpha_step)) + 1)
+                          if round(alpha_start + i * alpha_step, 2) <= alpha_end + 1e-9]
+
+                sweep_rows = []
+                prog = st.progress(0, text="Starting sweep...")
+                status_txt = st.empty()
+
+                for i, a in enumerate(alphas):
+                    pct = int((i / len(alphas)) * 100)
+                    prog.progress(pct, text=f"Running α = {a}°... ({pct}% complete, {i}/{len(alphas)} steps)")
+                    status_txt.caption(f"Step {i+1} of {len(alphas)}: α = {a}°")
+                    try:
+                        r = run_xfoil_analysis(
+                            file_content=file_content,
+                            filename=uploaded_file.name,
+                            reynolds=reynolds,
+                            alpha=float(a),
+                            backend_url=backend_url
+                        )
+                        coeffs = r.get("coefficients", {})
+                        cl = coeffs.get("CL", None)
+                        cd = coeffs.get("CD", None)
+                        cm = coeffs.get("Cm", None)
+                        ld = (cl / cd) if (cl is not None and cd and cd != 0) else None
+                        sweep_rows.append({
+                            "α (°)": a,
+                            "CL": round(cl, 4) if cl is not None else "—",
+                            "CD": round(cd, 5) if cd is not None else "—",
+                            "L/D": round(ld, 2) if ld is not None else "—",
+                            "Cm": round(cm, 4) if cm is not None else "—",
+                            "Status": "✅ Converged"
+                        })
+                    except Exception as step_err:
+                        sweep_rows.append({
+                            "α (°)": a,
+                            "CL": "—", "CD": "—", "L/D": "—", "Cm": "—",
+                            "Status": f"❌ Failed"
+                        })
+
+                prog.progress(100, text="✅ Sweep complete!")
+                status_txt.empty()
+
+                # Store first converged result for geometry/parser display
+                first_result = None
+                for a in alphas:
+                    try:
+                        first_result = run_xfoil_analysis(
+                            file_content=file_content,
+                            filename=uploaded_file.name,
+                            reynolds=reynolds,
+                            alpha=float(a),
+                            backend_url=backend_url
+                        )
+                        break
+                    except Exception:
+                        continue
+
+                st.session_state.sweep_results = sweep_rows
+                st.session_state.batch_results = None
+                st.session_state.sweep_params = {
+                    'reynolds': reynolds,
+                    'alpha_start': alpha_start,
+                    'alpha_end': alpha_end,
+                    'alpha_step': alpha_step,
+                    'filename': uploaded_file.name,
+                    'first_result': first_result,
+                }
+                st.session_state.results = None
+                st.session_state.analyzing = False
+
+            elif not st.session_state.batch_mode:
+                # ── Single-point analysis ─────────────────────────────────
+                with st.spinner("Computing... (30-60s on free tier, instant if cached)"):
+                    result = run_xfoil_analysis(
+                        file_content=file_content,
+                        filename=uploaded_file.name,
+                        reynolds=reynolds,
+                        alpha=alpha,
+                        backend_url=backend_url
+                    )
+
+                new_count = increment_analysis_count()
+                if new_count:
+                    st.toast(f"✅ Analysis #{new_count:,} completed!", icon="🎉")
+
+                st.session_state.results = result
+                st.session_state.last_params = {
+                    'reynolds': reynolds,
+                    'alpha': alpha,
+                    'filename': uploaded_file.name
+                }
+                st.session_state.sweep_results = None
+                st.session_state.batch_results = None
+                st.session_state.analyzing = False
+                st.success("✅ Simulation completed successfully!")
 
         except Exception as e:
             st.session_state.analyzing = False
@@ -818,6 +1028,180 @@ with right_col:
                 st.error(f"❌ Error: {error_msg}")
                 if "rate-limited" in error_msg.lower() or "429" in error_msg:
                     st.info("💡 **Tip:** Free tier has rate limits. Wait 60 seconds before trying again.")
+
+    # ── Batch Results ─────────────────────────────────────────────────────────
+    if st.session_state.batch_results is not None:
+        bp = st.session_state.batch_params
+        st.markdown("---")
+        st.info(
+            f"📦 **Batch Analysis** | {bp['n_files']} files | "
+            f"Re = {bp['reynolds']:,} | α = {bp['alpha']}°"
+        )
+        st.subheader("📋 Batch Results")
+
+        batch_df = pd.DataFrame(st.session_state.batch_results)
+        st.dataframe(batch_df, use_container_width=True, hide_index=True)
+
+        csv_data = batch_df.to_csv(index=False)
+        st.download_button(
+            label="⬇️ Export as CSV",
+            data=csv_data,
+            file_name=f"aerolab_batch_Re{int(bp['reynolds'])}_alpha{bp['alpha']}.csv",
+            mime="text/csv",
+        )
+
+    # ── Sweep Results ─────────────────────────────────────────────────────────
+    if st.session_state.sweep_results is not None:
+        sp = st.session_state.sweep_params
+        st.markdown("---")
+        st.info(
+            f"📊 **{sp['filename']}** | Re = {sp['reynolds']:,} | "
+            f"α = {sp['alpha_start']}° → {sp['alpha_end']}° (step {sp['alpha_step']}°)"
+        )
+        st.subheader("📋 AOA Sweep Results")
+
+        sweep_df = pd.DataFrame(st.session_state.sweep_results)
+        st.dataframe(sweep_df, use_container_width=True, hide_index=True)
+
+        # CSV export
+        csv_data = sweep_df.to_csv(index=False)
+        st.download_button(
+            label="⬇️ Export as CSV",
+            data=csv_data,
+            file_name=sp['filename'].replace(".dat", f"_sweep_Re{int(sp['reynolds'])}.csv"),
+            mime="text/csv",
+        )
+
+        # Polar plots download
+        converged = sweep_df[sweep_df["Status"] == "✅ Converged"].copy()
+        if len(converged) >= 2:
+            st.markdown("---")
+            st.subheader("📈 Download Polar Plots")
+            try:
+                import io as _io
+                import plotly.graph_objects as go
+                import plotly.io as pio
+
+                cl_vals = pd.to_numeric(converged["CL"], errors='coerce')
+                cd_vals = pd.to_numeric(converged["CD"], errors='coerce')
+                cm_vals = pd.to_numeric(converged["Cm"], errors='coerce')
+                ld_vals = pd.to_numeric(converged["L/D"], errors='coerce')
+                aoa_vals = converged["α (°)"]
+
+                plots = {
+                    "CL_vs_AOA": (aoa_vals, cl_vals, "α (°)", "CL", "CL vs Angle of Attack"),
+                    "CD_vs_AOA": (aoa_vals, cd_vals, "α (°)", "CD", "CD vs Angle of Attack"),
+                    "CM_vs_AOA": (aoa_vals, cm_vals, "α (°)", "Cm", "Cm vs Angle of Attack"),
+                    "CL_vs_CD":  (cd_vals,  cl_vals, "CD",    "CL", "Drag Polar (CL vs CD)"),
+                    "LD_vs_AOA": (aoa_vals, ld_vals, "α (°)", "L/D", "L/D vs Angle of Attack"),
+                }
+
+                dl_cols = st.columns(len(plots))
+                for col, (name, (xd, yd, xl, yl, title)) in zip(dl_cols, plots.items()):
+                    fig = go.Figure()
+                    fig.add_trace(go.Scatter(
+                        x=xd, y=yd, mode='lines+markers',
+                        line=dict(color='#667eea', width=2),
+                        marker=dict(size=6)
+                    ))
+                    fig.update_layout(
+                        title=title, xaxis_title=xl, yaxis_title=yl,
+                        plot_bgcolor='white', height=400, width=600,
+                        font=dict(family="Arial", size=13),
+                    )
+                    fig.update_xaxes(showgrid=True, gridcolor='lightgray')
+                    fig.update_yaxes(showgrid=True, gridcolor='lightgray')
+                    img_bytes = pio.to_image(fig, format="png", scale=2)
+                    with col:
+                        st.download_button(
+                            label=f"⬇️ {yl} vs {xl}",
+                            data=img_bytes,
+                            file_name=f"{sp['filename'].replace('.dat','')}_{name}.png",
+                            mime="image/png",
+                            key=f"dl_{name}"
+                        )
+            except Exception as plot_err:
+                st.warning(f"Plot generation failed: {plot_err}")
+
+        # Show airfoil geometry and parser output from first converged result
+        if sp.get('first_result'):
+            fr = sp['first_result']
+            st.markdown("---")
+            coords_after = pd.DataFrame(fr["coords_after"], columns=["x", "y"])
+            st.subheader("🛩️ Airfoil Geometry")
+            fig1 = go.Figure()
+            fig1.add_trace(go.Scatter(
+                x=coords_after["x"], y=coords_after["y"],
+                mode='lines', name='Airfoil',
+                line=dict(color='#667eea', width=3),
+                fill='toself', fillcolor='rgba(102, 126, 234, 0.2)',
+            ))
+            fig1.add_hline(y=0, line_dash="dash", line_color="gray", opacity=0.3)
+            fig1.update_layout(
+                title=sp['filename'], xaxis_title="x/c", yaxis_title="y/c",
+                height=350, plot_bgcolor='white',
+                yaxis=dict(scaleanchor="x", scaleratio=1)
+            )
+            st.plotly_chart(fig1, use_container_width=True)
+
+            # Parser output box
+            st.markdown("---")
+            st.subheader("🔧 Parser Output")
+            parser_fixes = fr.get("parser_fixes", [])
+            if parser_fixes and parser_fixes != ["No changes made — file was already in valid Selig format"]:
+                fix_lines = "\n".join(f"  ✔  {fix}" for fix in parser_fixes)
+                fix_header = f"⚠️  {len(parser_fixes)} repair(s) applied:"
+            else:
+                fix_lines = "  ✔  No changes made — file was already in valid Selig format"
+                fix_header = "✅ File accepted as-is:"
+            st.markdown(
+                f"""<div style="background:#0d1117;border:1px solid #30363d;border-radius:8px;
+                padding:14px 18px 6px;font-family:'Courier New',Courier,monospace;
+                font-size:13px;color:#8b949e;line-height:1.6;">
+                <span style="color:#58a6ff;font-weight:600;">AeroLab Parser</span>
+                <span style="color:#3fb950;"> &gt;</span>
+                <span style="color:#e6edf3;"> {sp['filename']}</span><br>
+                <span style="color:#f0883e;">{fix_header}</span><br>
+                <span style="color:#3fb950;white-space:pre-wrap;">{fix_lines}</span>
+                </div>""",
+                unsafe_allow_html=True
+            )
+
+            coord_lines_sweep = "\n".join(
+                f"  {x:.6f}  {y:.6f}"
+                for x, y in fr["coords_after"]
+            )
+            coord_text_sweep = f"AIRFOIL\n{coord_lines_sweep}"
+            with st.expander("📄 View Parsed Coordinates", expanded=False):
+                st.code(coord_text_sweep, language=None)
+                st.download_button(
+                    label="⬇️ Download parsed .dat",
+                    data=coord_text_sweep,
+                    file_name=sp['filename'].replace(".dat", "_parsed.dat"),
+                    mime="text/plain",
+                    key="sweep_parsed_download"
+                )
+            st.markdown("---")
+            st.subheader("🌊 Interactive Wind Tunnel")
+            st.caption(
+                "Live Lattice-Boltzmann (D2Q9) simulation of your airfoil. "
+                "Adjust AOA, flow speed, and trail density with the sliders. "
+                "Use 📷 Save PNG to capture the current view. "
+                "Note: Reynolds number shown is in lattice units — independent of the XFOIL analysis above."
+            )
+            _sweep_name = sp['filename'].replace(".dat", "").replace("_", " ")
+            build_lbm_component(
+                coords_after=fr["coords_after"],
+                airfoil_name=_sweep_name,
+            )
+            with st.expander("ℹ️ About This Visualisation"):
+                st.markdown("""
+                **Interactive Wind Tunnel — D2Q9 Lattice-Boltzmann Method (WebGL2)**
+                - **Colour field** — fluid speed: blue = slow, red = fast
+                - **White trails** — passive smoke tracers showing flow direction
+                - **AOA slider** — pitches the airfoil in real time
+                - **📷 Save PNG** — captures the current canvas as a PNG file
+                """)
 
     # ── Results ───────────────────────────────────────────────────────────────
     if st.session_state.results is not None:
@@ -886,6 +1270,58 @@ with right_col:
                 st.write(f"**Points:** {len(coords_after)}")
                 st.write(f"**Max thickness:** {(coords_after['y'].max() - coords_after['y'].min()):.4f}")
                 st.write(f"**Chord length:** {coords_after['x'].max() - coords_after['x'].min():.4f}")
+
+        # ── Parsed Coordinate Box ─────────────────────────────────────────────
+        st.markdown("---")
+        st.subheader("🔧 Parser Output")
+
+        # Fix log
+        parser_fixes = result.get("parser_fixes", [])
+        if parser_fixes and parser_fixes != ["No changes made — file was already in valid Selig format"]:
+            fix_lines = "\n".join(f"  ✔  {fix}" for fix in parser_fixes)
+            fix_header = f"⚠️  {len(parser_fixes)} repair(s) applied:"
+        else:
+            fix_lines = "  ✔  No changes made — file was already in valid Selig format"
+            fix_header = "✅ File accepted as-is:"
+
+        st.markdown(
+            f"""
+            <div style="
+                background:#0d1117;
+                border:1px solid #30363d;
+                border-radius:8px;
+                padding:14px 18px 6px;
+                margin-bottom:8px;
+                font-family:'Courier New',Courier,monospace;
+                font-size:13px;
+                color:#8b949e;
+                line-height:1.6;
+            ">
+                <span style="color:#58a6ff;font-weight:600;">AeroLab Parser</span>
+                <span style="color:#3fb950;"> &gt;</span>
+                <span style="color:#e6edf3;"> {last_params['filename']}</span><br>
+                <span style="color:#f0883e;">{fix_header}</span><br>
+                <span style="color:#3fb950;white-space:pre-wrap;">{fix_lines}</span>
+            </div>
+            """,
+            unsafe_allow_html=True
+        )
+
+        # Coordinate output
+        coord_lines = "\n".join(
+            f"  {x:.6f}  {y:.6f}"
+            for x, y in result["coords_after"]
+        )
+        coord_text = f"AIRFOIL\n{coord_lines}"
+
+        with st.expander("📄 View Parsed Coordinates", expanded=False):
+            st.code(coord_text, language=None)
+            st.download_button(
+                label="⬇️ Download parsed .dat",
+                data=coord_text,
+                file_name=last_params['filename'].replace(".dat", "_parsed.dat"),
+                mime="text/plain",
+            )
 
         with plot_col2:
             if result["cp_x"] and result["cp_values"]:
