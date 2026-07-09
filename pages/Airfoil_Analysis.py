@@ -1104,17 +1104,17 @@ with right_col:
                 aoa_vals = converged["α (°)"]
 
                 plots = {
-                    "CL_vs_AOA": (aoa_vals, cl_vals, "Angle of Attack α (°)", "Lift Coefficient CL", "CL vs Angle of Attack"),
-                    "CD_vs_AOA": (aoa_vals, cd_vals, "Angle of Attack α (°)", "Drag Coefficient CD", "CD vs Angle of Attack"),
-                    "CM_vs_AOA": (aoa_vals, cm_vals, "Angle of Attack α (°)", "Pitching Moment Cm", "Cm vs Angle of Attack"),
-                    "CL_vs_CD":  (cd_vals,  cl_vals, "Drag Coefficient CD",   "Lift Coefficient CL", "Drag Polar"),
-                    "LD_vs_AOA": (aoa_vals, ld_vals, "Angle of Attack α (°)", "Lift-to-Drag Ratio L/D", "L/D vs Angle of Attack"),
+                    "CL_vs_AOA": (aoa_vals, cl_vals, "Angle of Attack α (°)", "Lift Coefficient CL", "CL vs Angle of Attack", "⬇️ CL vs α"),
+                    "CD_vs_AOA": (aoa_vals, cd_vals, "Angle of Attack α (°)", "Drag Coefficient CD", "CD vs Angle of Attack", "⬇️ CD vs α"),
+                    "CM_vs_AOA": (aoa_vals, cm_vals, "Angle of Attack α (°)", "Pitching Moment Cm", "Cm vs Angle of Attack", "⬇️ Cm vs α"),
+                    "CL_vs_CD":  (cd_vals,  cl_vals, "Drag Coefficient CD",   "Lift Coefficient CL", "Drag Polar", "⬇️ Drag Polar"),
+                    "LD_vs_AOA": (aoa_vals, ld_vals, "Angle of Attack α (°)", "Lift-to-Drag Ratio L/D", "L/D vs Angle of Attack", "⬇️ L/D vs α"),
                 }
 
                 dl_cols = st.columns(len(plots))
                 airfoil_label = sp['filename'].replace(".dat", "")
 
-                for col, (name, (xd, yd, xl, yl, title)) in zip(dl_cols, plots.items()):
+                for col, (name, (xd, yd, xl, yl, title, btn_label)) in zip(dl_cols, plots.items()):
                     fig, ax = plt.subplots(figsize=(6, 4), dpi=150)
                     ax.plot(xd, yd, color='#667eea', linewidth=2,
                             marker='o', markersize=4, markerfacecolor='#667eea')
@@ -1131,7 +1131,7 @@ with right_col:
                     buf.seek(0)
                     with col:
                         st.download_button(
-                            label=f"⬇️ {title.split()[0]} vs {xl.split()[0] if 'Attack' not in xl else 'α'}",
+                            label=btn_label,
                             data=buf.getvalue(),
                             file_name=f"{airfoil_label}_{name}.png",
                             mime="image/png",
