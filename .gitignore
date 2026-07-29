@@ -8,3 +8,4 @@ fix.dat
 .env
 venv/
 xfoil.exe
+!pages/example_airfoils/*.dat
