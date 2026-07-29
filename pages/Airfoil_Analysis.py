@@ -39,7 +39,40 @@ def build_lbm_component(coords_after, airfoil_name: str = "") -> None:
     html = template.replace("%%USER_COORDS%%", coords_json)
     html = html.replace("%%USER_NAME%%", name_json)
 
-    components.html(html, height=640, scrolling=False)
+    components.html(html, height=700, scrolling=False)
+
+
+# ── Dual LBM Wind Tunnel component (Compare mode) ───────────────────────────
+_LBM_DUAL_TEMPLATE = os.path.join(os.path.dirname(__file__), "airfoil_flow_lbm_dual_aerolab.html")
+
+def build_lbm_dual_component(coords_a, name_a: str, coords_b, name_b: str) -> None:
+    """
+    Render two independent LBM wind-tunnel simulations side by side, driven
+    by one shared control panel (angle of attack, field mode, flow speed,
+    trails). Used by Compare mode. Each airfoil gets its own canvas and
+    stat cards (CL/CD/Re/Separation differ per airfoil); AoA and the other
+    flow parameters are shared since both listeners attach to the same
+    control elements.
+    """
+    try:
+        with open(_LBM_DUAL_TEMPLATE, "r") as f:
+            template = f.read()
+    except FileNotFoundError:
+        st.error(
+            f"⚠️ Dual LBM visualisation template not found. Expected: `{_LBM_DUAL_TEMPLATE}`"
+        )
+        return
+
+    def _coords_json(coords):
+        return json.dumps([[round(float(x), 6), round(float(y), 6)] for x, y in coords])
+
+    html = template
+    html = html.replace("%%USER_COORDS_A%%", _coords_json(coords_a))
+    html = html.replace("%%USER_NAME_A%%", json.dumps(name_a or "Airfoil A"))
+    html = html.replace("%%USER_COORDS_B%%", _coords_json(coords_b))
+    html = html.replace("%%USER_NAME_B%%", json.dumps(name_b or "Airfoil B"))
+
+    components.html(html, height=760, scrolling=False)
 
 
 @st.cache_data(show_spinner=False)
@@ -612,6 +645,51 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
+# ── Example Airfoils (bundled, no upload required) ──────────────────────────
+EXAMPLE_AIRFOILS_DIR = os.path.join(os.path.dirname(__file__), "example_airfoils")
+EXAMPLE_AIRFOILS = {
+    "NACA 0012":  "naca0012.dat",
+    "NACA 4412":  "naca4412.dat",
+    "Clark Y":    "clarky.dat",
+    "S1223":      "s1223.dat",
+    "Eppler 387": "e387.dat",
+}
+NO_EXAMPLE_LABEL = "— Upload my own —"
+
+@st.cache_data(show_spinner=False)
+def load_example_airfoil(filename: str) -> bytes:
+    with open(os.path.join(EXAMPLE_AIRFOILS_DIR, filename), "rb") as f:
+        return f.read()
+
+class _PresetFile:
+    """Minimal stand-in for Streamlit's UploadedFile so example airfoils can
+    flow through the exact same .name / .getvalue() call sites as a real
+    upload, with no changes needed downstream."""
+    def __init__(self, name: str, content: bytes):
+        self.name = name
+        self._content = content
+    def getvalue(self) -> bytes:
+        return self._content
+
+def example_airfoil_picker(key: str):
+    """Renders a small selectbox of bundled example airfoils. Returns a
+    _PresetFile if one is chosen, or None if the user wants to upload their
+    own (in which case the caller should render its own file_uploader)."""
+    choice = st.selectbox(
+        "Or choose an example airfoil",
+        [NO_EXAMPLE_LABEL] + list(EXAMPLE_AIRFOILS.keys()),
+        key=key,
+        label_visibility="collapsed"
+    )
+    if choice == NO_EXAMPLE_LABEL:
+        return None
+    filename = EXAMPLE_AIRFOILS[choice]
+    try:
+        return _PresetFile(filename, load_example_airfoil(filename))
+    except FileNotFoundError:
+        st.error(f"⚠️ Example airfoil file not found: `{filename}`")
+        return None
+
 # ── Backend Health Check ─────────────────────────────────────────────────────
 BACKEND_URL = "https://aerolab-backend.onrender.com"
 IS_LOCAL = os.environ.get("LOCAL_DEV", "false").lower() == "true"
@@ -671,12 +749,23 @@ if 'batch_results' not in st.session_state:
     st.session_state.batch_results = None
 if 'batch_params' not in st.session_state:
     st.session_state.batch_params = None
+if 'ncrit' not in st.session_state:
+    st.session_state.ncrit = 9.0
+if 'analysis_mode' not in st.session_state:
+    st.session_state.analysis_mode = "viscous"
+if 'compare_mode' not in st.session_state:
+    st.session_state.compare_mode = False
+if 'compare_results' not in st.session_state:
+    st.session_state.compare_results = None
+if 'compare_params' not in st.session_state:
+    st.session_state.compare_params = None
 
 @st.cache_data(ttl=3600, show_spinner=False, max_entries=50)
-def run_xfoil_analysis(file_content: bytes, filename: str, reynolds: float, alpha: float, backend_url: str):
+def run_xfoil_analysis(file_content: bytes, filename: str, reynolds: float, alpha: float, backend_url: str,
+                        ncrit: float = 9.0, mode: str = "viscous"):
     url = f"{backend_url}/upload_airfoil/"
     files = {"file": (filename, file_content, "text/plain")}
-    data = {"reynolds": reynolds, "alpha": alpha}
+    data = {"reynolds": reynolds, "alpha": alpha, "ncrit": ncrit, "mode": mode}
     max_retries = 3
     retry_delay = 5
     for attempt in range(max_retries):
@@ -749,7 +838,7 @@ with left_col:
         "AOA Sweep",
         value=st.session_state.sweep_mode,
         help="Sweep through a range of angles and generate a polar table",
-        disabled=st.session_state.batch_mode
+        disabled=st.session_state.batch_mode or st.session_state.compare_mode
     )
     if sweep_mode != st.session_state.sweep_mode:
         st.session_state.sweep_mode = sweep_mode
@@ -758,7 +847,7 @@ with left_col:
     if not st.session_state.sweep_mode:
         alpha = st.slider(
             "Angle of Attack",
-            min_value=-20.0, max_value=20.0, value=5.0, step=0.5,
+            min_value=-10.0, max_value=20.0, value=5.0, step=0.5,
             help="Angle between chord line and freestream",
             label_visibility="collapsed"
         )
@@ -770,7 +859,7 @@ with left_col:
         st.caption("Select sweep range:")
         sweep_range = st.slider(
             "AOA Range",
-            min_value=-20.0, max_value=20.0, value=(-5.0, 15.0), step=0.5,
+            min_value=-10.0, max_value=20.0, value=(-5.0, 15.0), step=0.5,
             help="Start and end angle of attack",
             label_visibility="collapsed"
         )
@@ -788,6 +877,34 @@ with left_col:
         st.caption(f"Total runs: **{n_steps}**")
 
     st.markdown("<br>", unsafe_allow_html=True)
+
+    st.markdown('<p class="param-label">Analysis Mode</p>', unsafe_allow_html=True)
+    analysis_mode = st.radio(
+        "Analysis Mode",
+        options=["viscous", "inviscid"],
+        format_func=lambda m: "Viscous (recommended)" if m == "viscous" else "Inviscid (fast, less accurate)",
+        index=0 if st.session_state.analysis_mode == "viscous" else 1,
+        help="Viscous mode solves the boundary layer (accurate CD, BL data). "
+             "Inviscid skips it — much faster but CD is unrealistically low and no BL data is returned.",
+        label_visibility="collapsed"
+    )
+    st.session_state.analysis_mode = analysis_mode
+
+    if analysis_mode == "viscous":
+        ncrit = st.slider(
+            "NCrit (transition criterion)",
+            min_value=0.1, max_value=14.0, value=st.session_state.ncrit, step=0.1,
+            help="Critical amplification factor for the e^N transition model. "
+                 "Lower NCrit (~4-6) = more turbulent/noisy environment (e.g. wind tunnel with grid). "
+                 "Higher NCrit (~9-11) = smoother/cleaner flow (e.g. sailplane in free air). Default: 9.0"
+        )
+        st.session_state.ncrit = ncrit
+        st.caption(f"NCrit: **{ncrit}**")
+    else:
+        ncrit = st.session_state.ncrit
+        st.caption("NCrit not used in inviscid mode")
+
+    st.markdown("<br>", unsafe_allow_html=True)
     st.markdown("---")
 
     with st.expander("ℹ️ About XFOIL"):
@@ -801,6 +918,9 @@ with left_col:
 
     with st.expander("📚 Example Airfoils"):
         st.markdown("""
+        These are available directly from the **"Or choose an example airfoil"**
+        dropdown above the upload box — no download needed:
+
         - **NACA 4412** — Classic cambered
         - **NACA 0012** — Symmetric
         - **Clark Y** — Flat-bottom
@@ -817,16 +937,59 @@ with right_col:
     batch_mode = st.checkbox(
         "📦 Batch Upload (up to 10 files)",
         value=st.session_state.batch_mode,
-        help="Upload multiple airfoil files at once. AOA sweep and visualisations are disabled in batch mode."
+        help="Upload multiple airfoil files at once. AOA sweep and visualisations are disabled in batch mode.",
+        disabled=st.session_state.compare_mode
     )
     if batch_mode != st.session_state.batch_mode:
         st.session_state.batch_mode = batch_mode
         st.rerun()
 
-    if st.session_state.batch_mode:
+    compare_mode = st.checkbox(
+        "⚖️ Compare Two Airfoils",
+        value=st.session_state.compare_mode,
+        help="Run two airfoils side by side at the same Re/α/NCrit — numeric results, geometry, "
+             "Cp, and a shared wind tunnel. Batch upload and AOA sweep are disabled in this mode.",
+        disabled=st.session_state.batch_mode
+    )
+    if compare_mode != st.session_state.compare_mode:
+        st.session_state.compare_mode = compare_mode
+        if compare_mode:
+            st.session_state.sweep_mode = False
+        st.rerun()
+
+    if st.session_state.compare_mode:
+        cmp_col_a, cmp_col_b = st.columns(2)
+        with cmp_col_a:
+            preset_a = example_airfoil_picker(key="example_picker_a")
+            if preset_a is not None:
+                uploaded_file_a = preset_a
+                st.caption(f"📄 Using example: **{preset_a.name}**")
+            else:
+                uploaded_file_a = st.file_uploader(
+                    "📁 Airfoil A",
+                    type=["dat", "txt"],
+                    key="compare_upload_a",
+                    help="First airfoil .dat or .txt file"
+                )
+        with cmp_col_b:
+            preset_b = example_airfoil_picker(key="example_picker_b")
+            if preset_b is not None:
+                uploaded_file_b = preset_b
+                st.caption(f"📄 Using example: **{preset_b.name}**")
+            else:
+                uploaded_file_b = st.file_uploader(
+                    "📁 Airfoil B",
+                    type=["dat", "txt"],
+                    key="compare_upload_b",
+                    help="Second airfoil .dat or .txt file"
+                )
+        uploaded_file = None
+        uploaded_files = []
+        has_upload = uploaded_file_a is not None and uploaded_file_b is not None
+    elif st.session_state.batch_mode:
         uploaded_files = st.file_uploader(
             "📁 Upload up to 10 Airfoil .dat Files",
-            type="dat",
+            type=["dat", "txt"],
             accept_multiple_files=True,
             help="Upload up to 10 .dat files. Results shown as a table."
         )
@@ -836,15 +999,22 @@ with right_col:
         uploaded_file = None
         has_upload = bool(uploaded_files)
     else:
-        uploaded_file = st.file_uploader(
-            "📁 Upload Airfoil .dat File",
-            type="dat",
-            help="Upload a file with airfoil x,y coordinates"
-        )
+        preset_single = example_airfoil_picker(key="example_picker_single")
+        if preset_single is not None:
+            uploaded_file = preset_single
+            st.caption(f"📄 Using example: **{preset_single.name}**")
+        else:
+            uploaded_file = st.file_uploader(
+                "📁 Upload Airfoil .dat File",
+                type=["dat", "txt"],
+                help="Upload a file with airfoil x,y coordinates"
+            )
         uploaded_files = []
         has_upload = uploaded_file is not None
 
-    if st.session_state.batch_mode:
+    if st.session_state.compare_mode:
+        btn_label = "🚀 Run Comparison"
+    elif st.session_state.batch_mode:
         btn_label = "🚀 Run Batch Analysis"
     elif st.session_state.sweep_mode:
         btn_label = "🚀 Run Sweep"
@@ -863,7 +1033,47 @@ with right_col:
         st.session_state.analyzing = True
 
         try:
-            if st.session_state.batch_mode:
+            if st.session_state.compare_mode:
+                with st.spinner(f"🔄 Analyzing {uploaded_file_a.name} and {uploaded_file_b.name}..."):
+                    result_a = run_xfoil_analysis(
+                        file_content=uploaded_file_a.getvalue(),
+                        filename=uploaded_file_a.name,
+                        reynolds=reynolds,
+                        alpha=alpha,
+                        backend_url=backend_url,
+                        ncrit=ncrit,
+                        mode=analysis_mode
+                    )
+                    result_b = run_xfoil_analysis(
+                        file_content=uploaded_file_b.getvalue(),
+                        filename=uploaded_file_b.name,
+                        reynolds=reynolds,
+                        alpha=alpha,
+                        backend_url=backend_url,
+                        ncrit=ncrit,
+                        mode=analysis_mode
+                    )
+
+                new_count = increment_analysis_count()
+                if new_count:
+                    st.toast(f"✅ Analysis #{new_count:,} completed!", icon="🎉")
+
+                st.session_state.compare_results = {"A": result_a, "B": result_b}
+                st.session_state.compare_params = {
+                    'reynolds': reynolds,
+                    'alpha': alpha,
+                    'ncrit': ncrit,
+                    'mode': analysis_mode,
+                    'filename_a': uploaded_file_a.name,
+                    'filename_b': uploaded_file_b.name,
+                }
+                st.session_state.results = None
+                st.session_state.sweep_results = None
+                st.session_state.batch_results = None
+                st.session_state.analyzing = False
+                st.success("✅ Comparison completed successfully!")
+
+            elif st.session_state.batch_mode:
                 # ── Batch Analysis ────────────────────────────────────────
                 files_to_run = uploaded_files[:10]
                 batch_rows = []
@@ -880,20 +1090,23 @@ with right_col:
                             filename=f.name,
                             reynolds=reynolds,
                             alpha=float(alpha) if not st.session_state.sweep_mode else 5.0,
-                            backend_url=backend_url
+                            backend_url=backend_url,
+                            ncrit=ncrit,
+                            mode=analysis_mode
                         )
                         coeffs = r.get("coefficients", {})
                         cl = coeffs.get("CL", None)
                         cd = coeffs.get("CD", None)
                         cm = coeffs.get("Cm", None)
                         ld = (cl / cd) if (cl is not None and cd and cd != 0) else None
+                        fell_back = analysis_mode == "viscous" and coeffs.get("mode") == "inviscid"
                         batch_rows.append({
                             "Airfoil": f.name.replace(".dat", ""),
                             "CL": round(cl, 4) if cl is not None else "—",
                             "CD": round(cd, 5) if cd is not None else "—",
                             "L/D": round(ld, 2) if ld is not None else "—",
                             "Cm": round(cm, 4) if cm is not None else "—",
-                            "Status": "✅ Converged"
+                            "Status": "⚠️ Fallback (Inviscid)" if fell_back else "✅ Converged"
                         })
                     except Exception:
                         batch_rows.append({
@@ -905,7 +1118,7 @@ with right_col:
                 prog.progress(100, text="✅ Batch complete!")
                 status_txt.empty()
 
-                n_converged_batch = sum(1 for r in batch_rows if r["Status"] == "✅ Converged")
+                n_converged_batch = sum(1 for r in batch_rows if r["Status"] != "❌ Failed")
                 if n_converged_batch > 0:
                     for _ in range(n_converged_batch):
                         new_count = increment_analysis_count()
@@ -916,16 +1129,22 @@ with right_col:
                 st.session_state.batch_params = {
                     'reynolds': reynolds,
                     'alpha': alpha if not st.session_state.sweep_mode else 5.0,
-                    'n_files': len(files_to_run)
+                    'n_files': len(files_to_run),
+                    'ncrit': ncrit,
+                    'mode': analysis_mode,
                 }
                 st.session_state.results = None
                 st.session_state.sweep_results = None
+                st.session_state.compare_results = None
                 st.session_state.analyzing = False
 
             else:
                 file_content = uploaded_file.getvalue()
 
-            if st.session_state.sweep_mode:
+            if st.session_state.compare_mode:
+                pass  # already fully handled above, nothing more to do
+
+            elif st.session_state.sweep_mode:
                 # ── AOA Sweep ─────────────────────────────────────────────
                 alphas = [round(alpha_start + i * alpha_step, 2)
                           for i in range(int(round((alpha_end - alpha_start) / alpha_step)) + 1)
@@ -945,20 +1164,23 @@ with right_col:
                             filename=uploaded_file.name,
                             reynolds=reynolds,
                             alpha=float(a),
-                            backend_url=backend_url
+                            backend_url=backend_url,
+                            ncrit=ncrit,
+                            mode=analysis_mode
                         )
                         coeffs = r.get("coefficients", {})
                         cl = coeffs.get("CL", None)
                         cd = coeffs.get("CD", None)
                         cm = coeffs.get("Cm", None)
                         ld = (cl / cd) if (cl is not None and cd and cd != 0) else None
+                        fell_back = analysis_mode == "viscous" and coeffs.get("mode") == "inviscid"
                         sweep_rows.append({
                             "α (°)": a,
                             "CL": round(cl, 4) if cl is not None else "—",
                             "CD": round(cd, 5) if cd is not None else "—",
                             "L/D": round(ld, 2) if ld is not None else "—",
                             "Cm": round(cm, 4) if cm is not None else "—",
-                            "Status": "✅ Converged"
+                            "Status": "⚠️ Fallback (Inviscid)" if fell_back else "✅ Converged"
                         })
                     except Exception as step_err:
                         sweep_rows.append({
@@ -970,7 +1192,7 @@ with right_col:
                 prog.progress(100, text="✅ Sweep complete!")
                 status_txt.empty()
 
-                n_converged_sweep = sum(1 for r in sweep_rows if r["Status"] == "✅ Converged")
+                n_converged_sweep = sum(1 for r in sweep_rows if r["Status"] != "❌ Failed")
                 if n_converged_sweep > 0:
                     for _ in range(n_converged_sweep):
                         new_count = increment_analysis_count()
@@ -986,7 +1208,9 @@ with right_col:
                             filename=uploaded_file.name,
                             reynolds=reynolds,
                             alpha=float(a),
-                            backend_url=backend_url
+                            backend_url=backend_url,
+                            ncrit=ncrit,
+                            mode=analysis_mode
                         )
                         break
                     except Exception:
@@ -1001,8 +1225,11 @@ with right_col:
                     'alpha_step': alpha_step,
                     'filename': uploaded_file.name,
                     'first_result': first_result,
+                    'ncrit': ncrit,
+                    'mode': analysis_mode,
                 }
                 st.session_state.results = None
+                st.session_state.compare_results = None
                 st.session_state.analyzing = False
 
             elif not st.session_state.batch_mode:
@@ -1013,7 +1240,9 @@ with right_col:
                         filename=uploaded_file.name,
                         reynolds=reynolds,
                         alpha=alpha,
-                        backend_url=backend_url
+                        backend_url=backend_url,
+                        ncrit=ncrit,
+                        mode=analysis_mode
                     )
 
                 new_count = increment_analysis_count()
@@ -1024,10 +1253,13 @@ with right_col:
                 st.session_state.last_params = {
                     'reynolds': reynolds,
                     'alpha': alpha,
-                    'filename': uploaded_file.name
+                    'filename': uploaded_file.name,
+                    'ncrit': ncrit,
+                    'mode': analysis_mode
                 }
                 st.session_state.sweep_results = None
                 st.session_state.batch_results = None
+                st.session_state.compare_results = None
                 st.session_state.analyzing = False
                 st.success("✅ Simulation completed successfully!")
 
@@ -1043,14 +1275,135 @@ with right_col:
                 if "rate-limited" in error_msg.lower() or "429" in error_msg:
                     st.info("💡 **Tip:** Free tier has rate limits. Wait 60 seconds before trying again.")
 
+    # ── Compare Results ──────────────────────────────────────────────────────
+    if st.session_state.compare_results is not None:
+        cp = st.session_state.compare_params
+        res_a = st.session_state.compare_results["A"]
+        res_b = st.session_state.compare_results["B"]
+        st.markdown("---")
+
+        cmp_mode_requested = cp.get('mode', 'viscous')
+        cmp_mode_str = (f"Viscous (NCrit={cp['ncrit']})" if cmp_mode_requested == "viscous"
+                         else cmp_mode_requested.capitalize())
+        st.info(
+            f"⚖️ **Comparing** {cp['filename_a']} vs {cp['filename_b']} | "
+            f"Re = {cp['reynolds']:,} | α = {cp['alpha']}° | {cmp_mode_str}"
+        )
+
+        fallback_names = []
+        for name, res in [(cp['filename_a'], res_a), (cp['filename_b'], res_b)]:
+            actual_mode = res.get("coefficients", {}).get("mode", cmp_mode_requested)
+            if cmp_mode_requested == "viscous" and actual_mode == "inviscid":
+                fallback_names.append(name)
+        if fallback_names:
+            st.warning(
+                f"⚠️ **{', '.join(fallback_names)}** didn't converge viscous and fell back to inviscid "
+                "(CD = 0 for that airfoil) — try a different Re, α, or NCrit."
+            )
+
+        st.subheader("📋 Comparison")
+
+        def _cmp_metrics(coeffs):
+            cl, cd, cm = coeffs.get("CL"), coeffs.get("CD"), coeffs.get("Cm")
+            ld = (cl / cd) if (cl is not None and cd not in (None, 0)) else None
+            return cl, cd, cm, ld
+
+        coeffs_a, coeffs_b = res_a.get("coefficients", {}), res_b.get("coefficients", {})
+        cl_a, cd_a, cm_a, ld_a = _cmp_metrics(coeffs_a)
+        cl_b, cd_b, cm_b, ld_b = _cmp_metrics(coeffs_b)
+
+        cmp_col_a, cmp_col_b = st.columns(2)
+        for col, name, cl, cd, cm, ld in [
+            (cmp_col_a, cp['filename_a'], cl_a, cd_a, cm_a, ld_a),
+            (cmp_col_b, cp['filename_b'], cl_b, cd_b, cm_b, ld_b),
+        ]:
+            with col:
+                st.markdown(f"**{name.replace('.dat', '')}**")
+                m1, m2 = st.columns(2)
+                m1.metric("CL", f"{cl:.4f}" if cl is not None else "N/A")
+                m2.metric("CD", f"{cd:.5f}" if cd is not None else "N/A")
+                m3, m4 = st.columns(2)
+                if cd == 0:
+                    m3.metric("L/D", "∞", help="Inviscid: CD = 0, L/D undefined")
+                elif ld is not None:
+                    m3.metric("L/D", f"{ld:.2f}")
+                else:
+                    m3.metric("L/D", "N/A")
+                m4.metric("Cm", f"{cm:.4f}" if cm is not None else "N/A")
+
+        st.markdown("---")
+
+        geom_col_a, geom_col_b = st.columns(2)
+        for col, name, res in [(geom_col_a, cp['filename_a'], res_a), (geom_col_b, cp['filename_b'], res_b)]:
+            with col:
+                coords_df = pd.DataFrame(res["coords_after"], columns=["x", "y"])
+                fig_geom = go.Figure()
+                fig_geom.add_trace(go.Scatter(
+                    x=coords_df["x"], y=coords_df["y"], mode='lines', name=name,
+                    line=dict(color='#667eea', width=3),
+                    fill='toself', fillcolor='rgba(102, 126, 234, 0.2)',
+                    hovertemplate='x: %{x:.4f}<br>y: %{y:.4f}<extra></extra>'
+                ))
+                fig_geom.add_hline(y=0, line_dash="dash", line_color="gray", opacity=0.3)
+                fig_geom.add_vline(x=0, line_dash="dash", line_color="gray", opacity=0.3)
+                fig_geom.update_layout(
+                    title=name, xaxis_title="x/c", yaxis_title="y/c",
+                    height=320, hovermode='closest', plot_bgcolor='white',
+                    yaxis=dict(scaleanchor="x", scaleratio=1),
+                    margin=dict(t=40, b=20)
+                )
+                fig_geom.update_xaxes(showgrid=True, gridcolor='lightgray')
+                fig_geom.update_yaxes(showgrid=True, gridcolor='lightgray')
+                st.plotly_chart(fig_geom, use_container_width=True, key=f"cmp_geom_{name}")
+
+                if res["cp_x"] and res["cp_values"]:
+                    cp_x_arr, cp_val_arr = np.array(res["cp_x"]), np.array(res["cp_values"])
+                    mid_idx = len(cp_x_arr) // 2
+                    fig_cp = go.Figure()
+                    fig_cp.add_trace(go.Scatter(
+                        x=cp_x_arr[:mid_idx], y=cp_val_arr[:mid_idx], mode='lines',
+                        name='Upper surface', line=dict(color='#3b82f6', width=3)
+                    ))
+                    fig_cp.add_trace(go.Scatter(
+                        x=cp_x_arr[mid_idx:], y=cp_val_arr[mid_idx:], mode='lines',
+                        name='Lower surface', line=dict(color='#ef4444', width=3)
+                    ))
+                    fig_cp.add_hline(y=0, line_dash="dash", line_color="gray", opacity=0.3)
+                    fig_cp.update_layout(
+                        xaxis_title="x/c", yaxis_title="Cp",
+                        height=320, hovermode='closest', plot_bgcolor='white',
+                        yaxis=dict(autorange='reversed'),
+                        margin=dict(t=20, b=20)
+                    )
+                    fig_cp.update_xaxes(showgrid=True, gridcolor='lightgray')
+                    fig_cp.update_yaxes(showgrid=True, gridcolor='lightgray')
+                    st.plotly_chart(fig_cp, use_container_width=True, key=f"cmp_cp_{name}")
+                else:
+                    st.caption("ℹ️ No Cp data available")
+
+        st.markdown("---")
+        st.subheader("🌊 Interactive Wind Tunnel — Side by Side")
+        build_lbm_dual_component(
+            coords_a=res_a["coords_after"], name_a=cp['filename_a'],
+            coords_b=res_b["coords_after"], name_b=cp['filename_b'],
+        )
+
     # ── Batch Results ─────────────────────────────────────────────────────────
     if st.session_state.batch_results is not None:
         bp = st.session_state.batch_params
         st.markdown("---")
+        bp_mode = bp.get('mode', 'viscous')
+        bp_mode_str = f"Viscous (NCrit={bp['ncrit']})" if bp_mode == "viscous" and 'ncrit' in bp else bp_mode.capitalize()
         st.info(
             f"📦 **Batch Analysis** | {bp['n_files']} files | "
-            f"Re = {bp['reynolds']:,} | α = {bp['alpha']}°"
+            f"Re = {bp['reynolds']:,} | α = {bp['alpha']}° | {bp_mode_str}"
         )
+        _n_fallback_batch = sum(1 for r in st.session_state.batch_results if r.get("Status") == "⚠️ Fallback (Inviscid)")
+        if _n_fallback_batch:
+            st.warning(
+                f"⚠️ **{_n_fallback_batch} file(s) didn't converge viscous** and fell back to inviscid "
+                "(CD = 0 for those rows) — see the Status column below."
+            )
         st.subheader("📋 Batch Results")
 
         batch_df = pd.DataFrame(st.session_state.batch_results)
@@ -1068,10 +1421,19 @@ with right_col:
     if st.session_state.sweep_results is not None:
         sp = st.session_state.sweep_params
         st.markdown("---")
+        sp_mode = sp.get('mode', 'viscous')
+        sp_mode_str = f"Viscous (NCrit={sp['ncrit']})" if sp_mode == "viscous" and 'ncrit' in sp else sp_mode.capitalize()
         st.info(
             f"📊 **{sp['filename']}** | Re = {sp['reynolds']:,} | "
-            f"α = {sp['alpha_start']}° → {sp['alpha_end']}° (step {sp['alpha_step']}°)"
+            f"α = {sp['alpha_start']}° → {sp['alpha_end']}° (step {sp['alpha_step']}°) | {sp_mode_str}"
         )
+        _n_fallback = sum(1 for r in st.session_state.sweep_results if r.get("Status") == "⚠️ Fallback (Inviscid)")
+        if _n_fallback:
+            st.warning(
+                f"⚠️ **{_n_fallback} point(s) in this sweep didn't converge viscous** and fell back to "
+                "inviscid (CD = 0 for those points) — see the Status column below. "
+                "They're excluded from the drag-polar and L/D plots since CD = 0 isn't physically meaningful."
+            )
         st.subheader("📋 AOA Sweep Results")
 
         sweep_df = pd.DataFrame(st.session_state.sweep_results)
@@ -1198,6 +1560,26 @@ with right_col:
                     mime="text/plain",
                     key="sweep_parsed_download"
                 )
+
+            sweep_bl_data = fr.get("bl_data")
+            if sweep_bl_data:
+                sweep_bl_rows = []
+                for surface in ("upper", "lower"):
+                    for row in sweep_bl_data.get(surface, []):
+                        sweep_bl_rows.append({"surface": surface, **row})
+                if sweep_bl_rows:
+                    sweep_bl_csv = pd.DataFrame(sweep_bl_rows).to_csv(index=False)
+                    st.download_button(
+                        label="💾 Download BL Data (CSV, first converged α)",
+                        data=sweep_bl_csv,
+                        file_name=f"{sp['filename'].replace('.dat', '')}_bl_data.csv",
+                        mime="text/csv",
+                        key="sweep_bl_dl",
+                        help="Boundary-layer data from the first converged angle of attack in the sweep"
+                    )
+            else:
+                st.caption("ℹ️ BL data not available for this sweep (inviscid mode or convergence fallback)")
+
             st.markdown("---")
             st.subheader("🌊 Interactive Wind Tunnel")
             st.caption(
@@ -1225,7 +1607,26 @@ with right_col:
         result = st.session_state.results
         last_params = st.session_state.last_params
 
-        st.info(f"📊 **{last_params['filename']}** | Re = {last_params['reynolds']:,} | α = {last_params['alpha']}°")
+        lp_requested_mode = last_params.get('mode', 'viscous')
+        lp_actual_mode = result.get("coefficients", {}).get("mode", lp_requested_mode)
+        lp_fell_back = lp_requested_mode == "viscous" and lp_actual_mode == "inviscid"
+
+        if lp_actual_mode == "viscous" and 'ncrit' in last_params:
+            lp_mode_str = f"Viscous (NCrit={last_params['ncrit']})"
+        else:
+            lp_mode_str = lp_actual_mode.capitalize()
+        if lp_fell_back:
+            lp_mode_str += " ⚠️ fell back from Viscous"
+
+        st.info(
+            f"📊 **{last_params['filename']}** | Re = {last_params['reynolds']:,} | "
+            f"α = {last_params['alpha']}° | {lp_mode_str}"
+        )
+        if lp_fell_back:
+            st.warning(
+                "⚠️ **Viscous solve did not converge for this case** — XFOIL fell back to inviscid "
+                "(CD = 0, no BL data). Try a different Reynolds number, angle of attack, or NCrit."
+            )
 
         if "coefficients" in result and result["coefficients"]:
             st.markdown("---")
@@ -1233,21 +1634,27 @@ with right_col:
             coeffs = result["coefficients"]
 
             if "CL" in coeffs and "CD" in coeffs:
-                ld = coeffs["CL"] / coeffs["CD"] if coeffs["CD"] != 0 else 0
+                is_inviscid = coeffs.get("mode") == "inviscid" or coeffs["CD"] == 0
+                ld = coeffs["CL"] / coeffs["CD"] if coeffs["CD"] != 0 else None
                 if coeffs["CL"] < -0.1:
                     st.warning("⚠️ **Negative Lift Detected!** The airfoil is generating downforce.")
                 elif abs(coeffs["CL"]) < 0.001:
                     st.info("ℹ️ **Near-Zero Lift:** Symmetric airfoil at zero AoA — L/D not meaningful.")
+                elif is_inviscid:
+                    st.info("ℹ️ **Inviscid Mode:** CD = 0 by design (no boundary-layer drag computed) — "
+                            "L/D is undefined, and stall can't be detected without viscous data.")
                 elif abs(last_params['alpha']) >= 12 and (coeffs["CD"] > 0.15 or ld < 5):
                     st.error("🚨 **Possible Stall Condition!** High drag and low L/D suggests flow separation.")
 
-            coef_cols = st.columns(3)
-            for idx, (label, key) in enumerate([("CL", "CL"), ("CD", "CD"), ("L/D", None)]):
+            coef_cols = st.columns(4)
+            for idx, (label, key) in enumerate([("CL", "CL"), ("CD", "CD"), ("L/D", None), ("Cm", "Cm")]):
                 with coef_cols[idx]:
                     if key and key in coeffs:
                         st.metric(label, f"{coeffs[key]:.4f}")
                     elif label == "L/D" and "CL" in coeffs and "CD" in coeffs:
-                        if abs(coeffs["CL"]) < 0.001 or coeffs["CD"] == 0:
+                        if coeffs["CD"] == 0:
+                            st.metric(label, "∞", help="Inviscid mode: CD = 0 (no viscous drag computed), so L/D is undefined")
+                        elif abs(coeffs["CL"]) < 0.001:
                             st.metric(label, "~0", help="CL ≈ 0, L/D not meaningful")
                         else:
                             ld_ratio = coeffs["CL"] / coeffs["CD"]
@@ -1384,15 +1791,37 @@ with right_col:
                 st.warning("⚠️ No pressure coefficient data available")
 
         st.markdown("---")
-        if st.button("💾 Download Results as CSV"):
-            csv_data = pd.DataFrame({'x': result["cp_x"], 'Cp': result["cp_values"]})
-            csv = csv_data.to_csv(index=False)
-            st.download_button(
-                label="Download Cp Data",
-                data=csv,
-                file_name=f"{last_params['filename'].replace('.dat', '')}_cp_results.csv",
-                mime="text/csv"
-            )
+        dl_col1, dl_col2 = st.columns(2)
+        with dl_col1:
+            if st.button("💾 Download Results as CSV"):
+                csv_data = pd.DataFrame({'x': result["cp_x"], 'Cp': result["cp_values"]})
+                csv = csv_data.to_csv(index=False)
+                st.download_button(
+                    label="Download Cp Data",
+                    data=csv,
+                    file_name=f"{last_params['filename'].replace('.dat', '')}_cp_results.csv",
+                    mime="text/csv",
+                    key="single_cp_dl"
+                )
+        with dl_col2:
+            bl_data = result.get("bl_data")
+            if bl_data:
+                bl_rows = []
+                for surface in ("upper", "lower"):
+                    for row in bl_data.get(surface, []):
+                        bl_rows.append({"surface": surface, **row})
+                if bl_rows:
+                    bl_csv = pd.DataFrame(bl_rows).to_csv(index=False)
+                    st.download_button(
+                        label="💾 Download BL Data (CSV)",
+                        data=bl_csv,
+                        file_name=f"{last_params['filename'].replace('.dat', '')}_bl_data.csv",
+                        mime="text/csv",
+                        key="single_bl_dl",
+                        help="Boundary-layer data: s, x, y, Dstar, Theta, Cf, H for upper and lower surfaces"
+                    )
+            else:
+                st.caption("ℹ️ BL data not available (inviscid mode or convergence fallback)")
 
         # ── Airflow Visualization (LBM Wind Tunnel) ─────────────────────────
         st.markdown("---")
