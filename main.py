@@ -43,6 +43,9 @@ MIN_REYNOLDS  = 1e4
 MAX_REYNOLDS  = 1e7
 MIN_ALPHA     = -10
 MAX_ALPHA     = 20
+MIN_NCRIT     = 0.1
+MAX_NCRIT     = 20.0
+VALID_MODES   = {"viscous", "inviscid"}
 
 xfoil_semaphore = asyncio.Semaphore(3)
 
@@ -180,6 +183,51 @@ def detect_and_merge_sections(data_lines):
     return merged, fixes
 
 
+def parse_polar_coefficients(polar_path: str):
+    """
+    Fallback parser for XFOIL's PACC polar-accumulation save file.
+
+    Unlike console output, this file always gets a numeric data row written
+    on every ALFA solve regardless of viscous/inviscid mode, so it's used
+    as a fallback when console-text CL/CD/Cm extraction comes up empty
+    (observed with some XFOIL builds in pure inviscid mode, which solves
+    without an iteration-convergence report and so never echoes "CL =").
+
+    Row format (whitespace-separated): alpha  CL  CD  CDp  CM  [Top_Xtr Bot_Xtr]
+    Returns a coefficients dict or None if the file is missing/unparseable.
+    """
+    if not os.path.exists(polar_path):
+        return None
+    try:
+        with open(polar_path, "r") as f:
+            lines = f.readlines()
+    except Exception:
+        return None
+
+    data_rows = []
+    header_passed = False
+    for line in lines:
+        stripped = line.strip()
+        if stripped.startswith("---"):
+            header_passed = True
+            continue
+        if not header_passed or not stripped:
+            continue
+        parts = stripped.split()
+        try:
+            vals = [float(p) for p in parts]
+        except ValueError:
+            continue
+        if len(vals) >= 5:
+            data_rows.append(vals)
+
+    if not data_rows:
+        return None
+
+    last = data_rows[-1]  # final/converged row
+    return {"CL": last[1], "CD": last[2], "CDp": last[3], "Cm": last[4]}
+
+
 def extract_aerodynamic_coefficients(stdout: str):
     """Extract coefficients — takes last occurrence (final converged value)."""
     coefficients = {}
@@ -203,9 +251,14 @@ def parse_bl_dump(bl_file_path: str):
     XFOIL DUMP column order (8 columns):
         s   x   y   Ue/Vinf   Dstar   Theta   Cf   H
 
-    File structure:
-        Section 1 (before first blank line) : upper surface (TE to LE)
-        Section 2 (after blank line)        : lower surface (LE to TE)
+    File structure: one continuous block, ordered by arc length s:
+        TE -> (over the top) -> LE -> (under the bottom) -> TE -> wake points (x > 1)
+    NOTE: earlier versions of this parser assumed a blank line separated the
+    upper and lower surface sections. XFOIL's DUMP output does not actually
+    include that separator, so that split silently produced 0 lower-surface
+    points on every run. We now split at the leading edge (minimum x) instead,
+    and drop trailing wake points (x > 1, past the trailing edge) so they
+    don't get folded into the lower surface.
 
     Returns None if file is missing or cannot be parsed.
     """
@@ -213,17 +266,13 @@ def parse_bl_dump(bl_file_path: str):
         logger.info(f"BL dump file not found: {bl_file_path}")
         return None
 
-    sections      = []
-    current_block = []
+    combined = []
 
     try:
         with open(bl_file_path, "r") as f:
             for line in f:
                 stripped = line.strip()
                 if not stripped:
-                    if current_block:
-                        sections.append(current_block)
-                        current_block = []
                     continue
                 parts = stripped.split()
                 if len(parts) < 7:
@@ -233,7 +282,7 @@ def parse_bl_dump(bl_file_path: str):
                 except ValueError:
                     continue
                 H = float(parts[7]) if len(parts) >= 8 else None
-                current_block.append({
+                combined.append({
                     "x":     vals[1],
                     "y":     vals[2],
                     "dstar": vals[4],
@@ -242,15 +291,22 @@ def parse_bl_dump(bl_file_path: str):
                     "H":     H,
                 })
 
-        if current_block:
-            sections.append(current_block)
-
-        if not sections:
-            logger.info("BL parse: no sections found in dump file")
+        if not combined:
+            logger.info("BL parse: no data rows found in dump file")
             return None
 
-        upper_rows = sections[0] if len(sections) > 0 else []
-        lower_rows = sections[1] if len(sections) > 1 else []
+        # Leading edge = point of minimum x. Points before/at it (TE -> LE)
+        # are the upper surface; points after it, up to x ~= 1.0 (back at the
+        # TE), are the lower surface. Anything beyond that (x > 1) is wake.
+        le_idx = min(range(len(combined)), key=lambda i: combined[i]["x"])
+        upper_rows = combined[:le_idx + 1]
+
+        lower_rows = []
+        for row in combined[le_idx + 1:]:
+            if row["x"] <= 1.0 + 1e-6:
+                lower_rows.append(row)
+            else:
+                break  # wake points start here
 
         logger.info(f"BL parse: {len(upper_rows)} upper pts, {len(lower_rows)} lower pts")
 
@@ -281,19 +337,39 @@ def parse_bl_dump(bl_file_path: str):
         return None
 
 
-def run_xfoil_sync(coords_file: str, reynolds: float, alpha: float, work_dir: str):
-    """Run XFOIL with retry strategy. Returns (cp_x, cp_values, coefficients, bl_data)."""
+def run_xfoil_sync(
+    coords_file:    str,
+    reynolds:       float,
+    alpha:          float,
+    work_dir:       str,
+    ncrit:          float = 9.0,
+    force_inviscid: bool = False,
+):
+    """
+    Run XFOIL with retry strategy. Returns (cp_x, cp_values, coefficients, bl_data).
+
+    If force_inviscid is True (user explicitly selected Inviscid mode), the
+    viscous strategies are skipped entirely and XFOIL is run once in inviscid
+    mode — no retry needed since there's no convergence to fall back from.
+    """
     coords_filename = "airfoil.dat"
     cp_filename     = "cp_output.txt"
     bl_filename     = "bl_output.txt"
 
     shutil.copy(coords_file, os.path.join(work_dir, coords_filename))
 
+    if force_inviscid:
+        logger.info("INVISCID mode explicitly requested — skipping viscous strategies")
+        return _run_xfoil_mode(coords_filename, cp_filename, bl_filename, work_dir,
+                               reynolds, alpha, viscous=False, timeout=20, smooth_geometry=False,
+                               ncrit=ncrit)
+
     # Strategy 1: Viscous, clean geometry
     try:
-        logger.info("Attempt 1: VISCOUS mode, clean geometry...")
+        logger.info(f"Attempt 1: VISCOUS mode, clean geometry (NCrit={ncrit})...")
         return _run_xfoil_mode(coords_filename, cp_filename, bl_filename, work_dir,
-                               reynolds, alpha, viscous=True, timeout=90, smooth_geometry=False)
+                               reynolds, alpha, viscous=True, timeout=90, smooth_geometry=False,
+                               ncrit=ncrit)
     except subprocess.TimeoutExpired:
         logger.error("Viscous mode timed out after 90s")
     except Exception as e:
@@ -304,9 +380,10 @@ def run_xfoil_sync(coords_file: str, reynolds: float, alpha: float, work_dir: st
 
     # Strategy 2: Viscous, smoothed geometry
     try:
-        logger.info("Attempt 2: VISCOUS mode, smoothed geometry...")
+        logger.info(f"Attempt 2: VISCOUS mode, smoothed geometry (NCrit={ncrit})...")
         return _run_xfoil_mode(coords_filename, cp_filename, bl_filename, work_dir,
-                               reynolds, alpha, viscous=True, timeout=90, smooth_geometry=True)
+                               reynolds, alpha, viscous=True, timeout=90, smooth_geometry=True,
+                               ncrit=ncrit)
     except subprocess.TimeoutExpired:
         logger.error("Viscous mode with smoothing timed out")
     except Exception as e:
@@ -320,7 +397,8 @@ def run_xfoil_sync(coords_file: str, reynolds: float, alpha: float, work_dir: st
     logger.info(sep)
     try:
         return _run_xfoil_mode(coords_filename, cp_filename, bl_filename, work_dir,
-                               reynolds, alpha, viscous=False, timeout=20, smooth_geometry=False)
+                               reynolds, alpha, viscous=False, timeout=20, smooth_geometry=False,
+                               ncrit=ncrit)
     except Exception as e:
         raise Exception(f"All strategies failed. Last error: {e}")
 
@@ -335,13 +413,16 @@ def _run_xfoil_mode(
     viscous:         bool,
     timeout:         int,
     smooth_geometry: bool = False,
+    ncrit:           float = 9.0,
 ):
-    cp_out_path = os.path.abspath(os.path.join(work_dir, cp_filename))
-    bl_out_path = os.path.abspath(os.path.join(work_dir, bl_filename))
-    script_path = os.path.abspath(os.path.join(work_dir, "xfoil_script.txt"))
-    log_path    = os.path.abspath(os.path.join(work_dir, "xfoil_output.log"))
+    cp_out_path    = os.path.abspath(os.path.join(work_dir, cp_filename))
+    bl_out_path    = os.path.abspath(os.path.join(work_dir, bl_filename))
+    polar_filename = "polar_output.txt"
+    polar_out_path = os.path.abspath(os.path.join(work_dir, polar_filename))
+    script_path    = os.path.abspath(os.path.join(work_dir, "xfoil_script.txt"))
+    log_path       = os.path.abspath(os.path.join(work_dir, "xfoil_output.log"))
 
-    for path in [cp_out_path, bl_out_path, log_path]:
+    for path in [cp_out_path, bl_out_path, polar_out_path, log_path]:
         if os.path.exists(path):
             try:
                 os.remove(path)
@@ -362,12 +443,29 @@ def _run_xfoil_mode(
     if viscous:
         script_lines.append(f"VISC {int(reynolds)}")
         script_lines.append("ITER 500")
+        script_lines.append("VPAR")
+        script_lines.append(f"N {ncrit}")
+        script_lines.append("")
+
+    # Polar accumulation: XFOIL always writes a numeric CL/CD/CDp/Cm row here
+    # on every ALFA solve, viscous or inviscid — unlike the console printout,
+    # which only echoes a "CL =" summary line as part of the viscous
+    # iteration-convergence report. This is our robust fallback source.
+    # IMPORTANT: must be opened AFTER viscous mode is established above —
+    # opening it while still in the default inviscid state left the polar
+    # accumulator's internal mode stuck, producing CD-forced-to-0 rows and
+    # broken (asymmetric) BL dumps even on solves that should converge fine.
+    script_lines.append("PACC")
+    script_lines.append(polar_filename)
+    script_lines.append("")
 
     script_lines.append(f"ALFA {alpha}")
     script_lines.append(f"CPWR {cp_filename}")
 
     if viscous:
         script_lines.append(f"DUMP {bl_filename}")
+
+    script_lines.append("PACC")  # toggle accumulation off before quitting
 
     script_lines.append("")
     script_lines.append("QUIT")
@@ -380,7 +478,8 @@ def _run_xfoil_mode(
     smooth_str = "+ SMOOTH" if smooth_geometry else ""
     sep70 = "=" * 70
     logger.info("\n" + sep70)
-    logger.info(f"XFOIL SCRIPT ({mode}{smooth_str})")
+    ncrit_str = f", NCrit={ncrit}" if viscous else ""
+    logger.info(f"XFOIL SCRIPT ({mode}{smooth_str}{ncrit_str})")
     logger.info(sep70)
     for i, line in enumerate(script_lines):
         logger.info(f"  {i+1:2d}: {repr(line)}")
@@ -408,6 +507,7 @@ def _run_xfoil_mode(
             f.write(f"Reynolds:    {reynolds}\n")
             f.write(f"Alpha:       {alpha}\n")
             f.write(f"Viscous:     {viscous}\n")
+            f.write(f"NCrit:       {ncrit if viscous else 'N/A'}\n")
             f.write(f"Return code: {proc.returncode}\n\n")
             f.write("STDOUT\n" + "=" * 70 + "\n")
             f.write(stdout)
@@ -451,8 +551,23 @@ def _run_xfoil_mode(
             raise Exception(f"{mode} did not generate CP output file")
 
         coefficients = extract_aerodynamic_coefficients(stdout)
+        if (not coefficients or "CL" not in coefficients) and not viscous:
+            # Only trust the polar-file fallback for genuine inviscid runs.
+            # In viscous mode, a missing console "CL =" line means the BL
+            # iteration did NOT converge — the polar file may still contain
+            # a garbage partial row (leftover inviscid CL, CD forced to 0).
+            # We must let that raise below so run_xfoil_sync's retry cascade
+            # (smoothed geometry, then true inviscid) can proceed instead of
+            # silently "succeeding" with a bogus CD=0 result.
+            logger.warning("Console CL parse failed — trying polar accumulation file fallback")
+            polar_coefficients = parse_polar_coefficients(polar_out_path)
+            if polar_coefficients and "CL" in polar_coefficients:
+                logger.info(f"Recovered coefficients from polar file: {polar_coefficients}")
+                coefficients = polar_coefficients
+
         if not coefficients or "CL" not in coefficients:
             logger.error(f"No coefficients extracted from XFOIL output")
+            logger.info(f"RAW STDOUT (full, {len(stdout)} chars):\n{stdout}")
             logger.info(f"\nChecking if ALFA {alpha} was processed:")
             alpha_patterns = [
                 f"alfa = {alpha:.3f}",
@@ -502,6 +617,8 @@ def _run_xfoil_mode(
             logger.warning(f"L/D={ld:.0f} unusually high")
 
         coefficients["mode"] = "viscous" if viscous else "inviscid"
+        if viscous:
+            coefficients["ncrit"] = ncrit
         if not viscous:
             coefficients["warning"] = "INVISCID MODE - CD is unrealistically low"
 
@@ -540,6 +657,23 @@ async def health(request: Request):
     }
 
 
+@app.get("/analysis_count")
+@limiter.limit("30/minute")
+async def analysis_count(request: Request):
+    """
+    Exposes the analysis counter over HTTP for frontends without direct DB
+    access (e.g. a JS frontend). Requires db_utils.py to be importable from
+    wherever this backend runs — if it isn't (or the DB isn't configured
+    here), returns {"count": null} rather than failing the whole service.
+    """
+    try:
+        from db_utils import get_analysis_count
+        return {"count": get_analysis_count()}
+    except Exception as e:
+        logger.info(f"analysis_count unavailable: {e}")
+        return {"count": None}
+
+
 @app.post("/upload_airfoil/")
 @limiter.limit("5/minute")
 async def upload_airfoil(
@@ -547,6 +681,8 @@ async def upload_airfoil(
     file:     UploadFile,
     reynolds: float = Form(...),
     alpha:    float = Form(...),
+    ncrit:    float = Form(9.0),
+    mode:     str   = Form("viscous"),
 ):
     if not (MIN_REYNOLDS <= reynolds <= MAX_REYNOLDS):
         raise HTTPException(status_code=400,
@@ -554,8 +690,15 @@ async def upload_airfoil(
     if not (MIN_ALPHA <= alpha <= MAX_ALPHA):
         raise HTTPException(status_code=400,
             detail=f"Alpha must be {MIN_ALPHA} to {MAX_ALPHA} degrees")
-    if not file.filename.endswith(".dat"):
-        raise HTTPException(status_code=400, detail="Only .dat files accepted")
+    if not (MIN_NCRIT <= ncrit <= MAX_NCRIT):
+        raise HTTPException(status_code=400,
+            detail=f"NCrit must be {MIN_NCRIT} to {MAX_NCRIT}")
+    mode = mode.strip().lower()
+    if mode not in VALID_MODES:
+        raise HTTPException(status_code=400,
+            detail=f"Mode must be one of {sorted(VALID_MODES)}")
+    if not file.filename.endswith((".dat", ".txt")):
+        raise HTTPException(status_code=400, detail="Only .dat or .txt files accepted")
 
     run_id   = str(uuid.uuid4())[:8]
     work_dir = os.path.join(TMP_DIR, f"run_{run_id}")
@@ -566,7 +709,8 @@ async def upload_airfoil(
 
     # Fixed f-string: was logger.info(f"\n{"="*60}\n...")
     sep60 = "=" * 60
-    logger.info(f"\n{sep60}\nNEW REQUEST: {file.filename}\nPlatform: {platform.system()}\n{sep60}")
+    logger.info(f"\n{sep60}\nNEW REQUEST: {file.filename}\nPlatform: {platform.system()}\n"
+                f"Mode: {mode}  NCrit: {ncrit}\n{sep60}")
 
     try:
         content = await file.read()
@@ -590,7 +734,7 @@ async def upload_airfoil(
 
         async with xfoil_semaphore:
             cp_x, cp_values, coefficients, bl_data = await to_thread.run_sync(
-                run_xfoil_sync, fix_path, reynolds, alpha, work_dir
+                run_xfoil_sync, fix_path, reynolds, alpha, work_dir, ncrit, mode == "inviscid"
             )
 
         bl_response = None
@@ -601,6 +745,12 @@ async def upload_airfoil(
                 "transition_upper_x": bl_data["transition_upper_x"],
                 "transition_lower_x": bl_data["transition_lower_x"],
             }
+
+        try:
+            from db_utils import increment_analysis_count
+            increment_analysis_count()
+        except Exception as e:
+            logger.info(f"increment_analysis_count unavailable: {e}")
 
         return {
             "success":       True,
