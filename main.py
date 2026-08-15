@@ -675,7 +675,6 @@ async def analysis_count(request: Request):
 
 
 @app.post("/upload_airfoil/")
-@limiter.limit("5/minute")
 async def upload_airfoil(
     request:  Request,
     file:     UploadFile,

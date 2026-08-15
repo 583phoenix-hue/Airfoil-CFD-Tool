@@ -10,6 +10,7 @@ import base64
 import json
 import streamlit.components.v1 as components
 from db_utils import increment_analysis_count
+from aerolab_theme import COLORS, CMAP_GRADIENT, inject_theme, cmap_bar, eyebrow
 
 
 # ── Flow Visualization Helpers ───────────────────────────────────────────────
@@ -605,43 +606,38 @@ def build_flow_animation(sl_x, sl_y, speed_grid, x_arr, y_arr, coords, alpha_deg
 st.set_page_config(page_title="Airfoil Analysis - AeroLab", layout="wide", page_icon="✈️",
                    initial_sidebar_state="collapsed")
 
-st.markdown("""
+inject_theme()
+st.markdown(f"""
     <style>
-        [data-testid="stSidebarNav"]    {display: none;}
-        [data-testid="collapsedControl"] {display: none;}
-        section[data-testid="stSidebar"] {display: none;}
-        footer {visibility: hidden;}
-        #MainMenu {visibility: hidden;}
-        header {visibility: hidden;}
-        div[data-testid="stToolbar"]    {visibility: hidden; height: 0%;}
-        div[data-testid="stDecoration"] {visibility: hidden; height: 0%;}
-        .param-label {
+        .param-label {{
             font-size: 0.82rem;
             font-weight: 600;
-            color: #555;
+            color: {COLORS['text_faint']};
             text-transform: uppercase;
             letter-spacing: 0.05em;
             margin-bottom: 0.2rem;
-        }
-        .panel-title {
+        }}
+        .panel-title {{
+            font-family: 'Space Grotesk', sans-serif;
             font-size: 1.15rem;
-            font-weight: 700;
-            color: #667eea;
+            font-weight: 600;
+            color: {COLORS['text']};
             padding-bottom: 0.6rem;
-            border-bottom: 2px solid #667eea30;
+            border-bottom: 2px solid {COLORS['border']};
             margin-bottom: 1rem;
-        }
-        .main-header {
+        }}
+        .main-header {{
+            font-family: 'Space Grotesk', sans-serif;
             font-size: 2.8rem;
-            font-weight: bold;
-            color: #667eea;
+            font-weight: 600;
+            color: {COLORS['text']};
             margin-bottom: 0.2rem;
-        }
-        .sub-header {
-            color: #888;
+        }}
+        .sub-header {{
+            color: {COLORS['text_dim']};
             margin-bottom: 1.5rem;
             font-size: 1rem;
-        }
+        }}
     </style>
 """, unsafe_allow_html=True)
 
@@ -1340,20 +1336,21 @@ with right_col:
                 fig_geom = go.Figure()
                 fig_geom.add_trace(go.Scatter(
                     x=coords_df["x"], y=coords_df["y"], mode='lines', name=name,
-                    line=dict(color='#667eea', width=3),
-                    fill='toself', fillcolor='rgba(102, 126, 234, 0.2)',
+                    line=dict(color=COLORS['c2'], width=3),
+                    fill='toself', fillcolor='rgba(0, 255, 255, 0.15)',
                     hovertemplate='x: %{x:.4f}<br>y: %{y:.4f}<extra></extra>'
                 ))
-                fig_geom.add_hline(y=0, line_dash="dash", line_color="gray", opacity=0.3)
-                fig_geom.add_vline(x=0, line_dash="dash", line_color="gray", opacity=0.3)
+                fig_geom.add_hline(y=0, line_dash="dash", line_color=COLORS['border_strong'], opacity=0.3)
+                fig_geom.add_vline(x=0, line_dash="dash", line_color=COLORS['border_strong'], opacity=0.3)
                 fig_geom.update_layout(
                     title=name, xaxis_title="x/c", yaxis_title="y/c",
-                    height=320, hovermode='closest', plot_bgcolor='white',
+                    height=320, hovermode='closest', plot_bgcolor=COLORS['bg_card'],
+                    paper_bgcolor=COLORS['bg_card'], font=dict(color=COLORS['text_dim']),
                     yaxis=dict(scaleanchor="x", scaleratio=1),
                     margin=dict(t=40, b=20)
                 )
-                fig_geom.update_xaxes(showgrid=True, gridcolor='lightgray')
-                fig_geom.update_yaxes(showgrid=True, gridcolor='lightgray')
+                fig_geom.update_xaxes(showgrid=True, gridcolor=COLORS['border'])
+                fig_geom.update_yaxes(showgrid=True, gridcolor=COLORS['border'])
                 st.plotly_chart(fig_geom, use_container_width=True, key=f"cmp_geom_{name}")
 
                 if res["cp_x"] and res["cp_values"]:
@@ -1362,21 +1359,22 @@ with right_col:
                     fig_cp = go.Figure()
                     fig_cp.add_trace(go.Scatter(
                         x=cp_x_arr[:mid_idx], y=cp_val_arr[:mid_idx], mode='lines',
-                        name='Upper surface', line=dict(color='#3b82f6', width=3)
+                        name='Upper surface', line=dict(color=COLORS['c2'], width=3)
                     ))
                     fig_cp.add_trace(go.Scatter(
                         x=cp_x_arr[mid_idx:], y=cp_val_arr[mid_idx:], mode='lines',
-                        name='Lower surface', line=dict(color='#ef4444', width=3)
+                        name='Lower surface', line=dict(color=COLORS['c6'], width=3)
                     ))
-                    fig_cp.add_hline(y=0, line_dash="dash", line_color="gray", opacity=0.3)
+                    fig_cp.add_hline(y=0, line_dash="dash", line_color=COLORS['border_strong'], opacity=0.3)
                     fig_cp.update_layout(
                         xaxis_title="x/c", yaxis_title="Cp",
-                        height=320, hovermode='closest', plot_bgcolor='white',
+                        height=320, hovermode='closest', plot_bgcolor=COLORS['bg_card'],
+                        paper_bgcolor=COLORS['bg_card'], font=dict(color=COLORS['text_dim']),
                         yaxis=dict(autorange='reversed'),
                         margin=dict(t=20, b=20)
                     )
-                    fig_cp.update_xaxes(showgrid=True, gridcolor='lightgray')
-                    fig_cp.update_yaxes(showgrid=True, gridcolor='lightgray')
+                    fig_cp.update_xaxes(showgrid=True, gridcolor=COLORS['border'])
+                    fig_cp.update_yaxes(showgrid=True, gridcolor=COLORS['border'])
                     st.plotly_chart(fig_cp, use_container_width=True, key=f"cmp_cp_{name}")
                 else:
                     st.caption("ℹ️ No Cp data available")
@@ -1512,13 +1510,14 @@ with right_col:
             fig1.add_trace(go.Scatter(
                 x=coords_after["x"], y=coords_after["y"],
                 mode='lines', name='Airfoil',
-                line=dict(color='#667eea', width=3),
-                fill='toself', fillcolor='rgba(102, 126, 234, 0.2)',
+                line=dict(color=COLORS['c2'], width=3),
+                fill='toself', fillcolor='rgba(0, 255, 255, 0.15)',
             ))
-            fig1.add_hline(y=0, line_dash="dash", line_color="gray", opacity=0.3)
+            fig1.add_hline(y=0, line_dash="dash", line_color=COLORS['border_strong'], opacity=0.3)
             fig1.update_layout(
                 title=sp['filename'], xaxis_title="x/c", yaxis_title="y/c",
-                height=350, plot_bgcolor='white',
+                height=350, plot_bgcolor=COLORS['bg_card'],
+                paper_bgcolor=COLORS['bg_card'], font=dict(color=COLORS['text_dim']),
                 yaxis=dict(scaleanchor="x", scaleratio=1)
             )
             st.plotly_chart(fig1, use_container_width=True)
@@ -1534,14 +1533,14 @@ with right_col:
                 fix_lines = "  ✔  No changes made — file was already in valid Selig format"
                 fix_header = "✅ File accepted as-is:"
             st.markdown(
-                f"""<div style="background:#0d1117;border:1px solid #30363d;border-radius:8px;
-                padding:14px 18px 6px;font-family:'Courier New',Courier,monospace;
-                font-size:13px;color:#8b949e;line-height:1.6;">
-                <span style="color:#58a6ff;font-weight:600;">AeroLab Parser</span>
-                <span style="color:#3fb950;"> &gt;</span>
-                <span style="color:#e6edf3;"> {sp['filename']}</span><br>
-                <span style="color:#f0883e;">{fix_header}</span><br>
-                <span style="color:#3fb950;white-space:pre-wrap;">{fix_lines}</span>
+                f"""<div style="background:{COLORS['bg']};border:1px solid {COLORS['border']};border-radius:8px;
+                padding:14px 18px 6px;font-family:'JetBrains Mono',monospace;
+                font-size:13px;color:{COLORS['text_dim']};line-height:1.6;">
+                <span style="color:{COLORS['c2']};font-weight:600;">AeroLab Parser</span>
+                <span style="color:{COLORS['c3']};"> &gt;</span>
+                <span style="color:{COLORS['text']};"> {sp['filename']}</span><br>
+                <span style="color:{COLORS['c5']};">{fix_header}</span><br>
+                <span style="color:{COLORS['c3']};white-space:pre-wrap;">{fix_lines}</span>
                 </div>""",
                 unsafe_allow_html=True
             )
@@ -1673,21 +1672,22 @@ with right_col:
             fig1.add_trace(go.Scatter(
                 x=coords_after["x"], y=coords_after["y"],
                 mode='lines', name='Airfoil',
-                line=dict(color='#667eea', width=3),
-                fill='toself', fillcolor='rgba(102, 126, 234, 0.2)',
+                line=dict(color=COLORS['c2'], width=3),
+                fill='toself', fillcolor='rgba(0, 255, 255, 0.15)',
                 hovertemplate='x: %{x:.4f}<br>y: %{y:.4f}<extra></extra>'
             ))
-            fig1.add_hline(y=0, line_dash="dash", line_color="gray", opacity=0.3)
-            fig1.add_vline(x=0, line_dash="dash", line_color="gray", opacity=0.3)
+            fig1.add_hline(y=0, line_dash="dash", line_color=COLORS['border_strong'], opacity=0.3)
+            fig1.add_vline(x=0, line_dash="dash", line_color=COLORS['border_strong'], opacity=0.3)
             fig1.update_layout(
                 title=last_params['filename'],
                 xaxis_title="x/c", yaxis_title="y/c",
                 height=400, hovermode='closest',
-                plot_bgcolor='white',
+                plot_bgcolor=COLORS['bg_card'],
+                paper_bgcolor=COLORS['bg_card'], font=dict(color=COLORS['text_dim']),
                 yaxis=dict(scaleanchor="x", scaleratio=1)
             )
-            fig1.update_xaxes(showgrid=True, gridcolor='lightgray')
-            fig1.update_yaxes(showgrid=True, gridcolor='lightgray')
+            fig1.update_xaxes(showgrid=True, gridcolor=COLORS['border'])
+            fig1.update_yaxes(showgrid=True, gridcolor=COLORS['border'])
             st.plotly_chart(fig1, use_container_width=True)
 
             with st.expander("🔍 Geometry Details"):
@@ -1711,21 +1711,21 @@ with right_col:
         st.markdown(
             f"""
             <div style="
-                background:#0d1117;
-                border:1px solid #30363d;
+                background:{COLORS['bg']};
+                border:1px solid {COLORS['border']};
                 border-radius:8px;
                 padding:14px 18px 6px;
                 margin-bottom:8px;
-                font-family:'Courier New',Courier,monospace;
+                font-family:'JetBrains Mono',monospace;
                 font-size:13px;
-                color:#8b949e;
+                color:{COLORS['text_dim']};
                 line-height:1.6;
             ">
-                <span style="color:#58a6ff;font-weight:600;">AeroLab Parser</span>
-                <span style="color:#3fb950;"> &gt;</span>
-                <span style="color:#e6edf3;"> {last_params['filename']}</span><br>
-                <span style="color:#f0883e;">{fix_header}</span><br>
-                <span style="color:#3fb950;white-space:pre-wrap;">{fix_lines}</span>
+                <span style="color:{COLORS['c2']};font-weight:600;">AeroLab Parser</span>
+                <span style="color:{COLORS['c3']};"> &gt;</span>
+                <span style="color:{COLORS['text']};"> {last_params['filename']}</span><br>
+                <span style="color:{COLORS['c5']};">{fix_header}</span><br>
+                <span style="color:{COLORS['c3']};white-space:pre-wrap;">{fix_lines}</span>
             </div>
             """,
             unsafe_allow_html=True
@@ -1757,25 +1757,26 @@ with right_col:
                 fig2.add_trace(go.Scatter(
                     x=cp_x[:mid_idx], y=cp_values[:mid_idx],
                     mode='lines', name='Upper surface',
-                    line=dict(color='#3b82f6', width=3),
+                    line=dict(color=COLORS['c2'], width=3),
                     hovertemplate='x/c: %{x:.4f}<br>Cp: %{y:.4f}<extra></extra>'
                 ))
                 fig2.add_trace(go.Scatter(
                     x=cp_x[mid_idx:], y=cp_values[mid_idx:],
                     mode='lines', name='Lower surface',
-                    line=dict(color='#ef4444', width=3),
+                    line=dict(color=COLORS['c6'], width=3),
                     hovertemplate='x/c: %{x:.4f}<br>Cp: %{y:.4f}<extra></extra>'
                 ))
-                fig2.add_hline(y=0, line_dash="dash", line_color="gray", opacity=0.3)
+                fig2.add_hline(y=0, line_dash="dash", line_color=COLORS['border_strong'], opacity=0.3)
                 fig2.update_layout(
                     title=f"Re = {last_params['reynolds']:,.0f}, α = {last_params['alpha']}°",
                     xaxis_title="x/c", yaxis_title="Cp",
                     height=400, hovermode='closest',
-                    plot_bgcolor='white',
+                    plot_bgcolor=COLORS['bg_card'],
+                    paper_bgcolor=COLORS['bg_card'], font=dict(color=COLORS['text_dim']),
                     yaxis=dict(autorange='reversed')
                 )
-                fig2.update_xaxes(showgrid=True, gridcolor='lightgray')
-                fig2.update_yaxes(showgrid=True, gridcolor='lightgray')
+                fig2.update_xaxes(showgrid=True, gridcolor=COLORS['border'])
+                fig2.update_yaxes(showgrid=True, gridcolor=COLORS['border'])
                 st.plotly_chart(fig2, use_container_width=True)
 
                 with st.expander("📖 Understanding Cp"):
