@@ -14,9 +14,20 @@ from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
 from anyio import to_thread
 
-import static_divergence as aero_div
-import control_reversal as aero_rev
-import flutter_vg as aero_flutter
+# Aeroelasticity modules are still under active development and aren't
+# necessarily committed to every deployment yet. Import them defensively so a
+# missing module just disables the /aeroelasticity/* endpoints (they return
+# 503 below) instead of crashing the whole app at startup -- previously an
+# unconditional import here meant ANY deploy without these three files failed
+# to boot at all, taking down the working XFOIL endpoints along with them.
+try:
+    import static_divergence as aero_div
+    import control_reversal as aero_rev
+    import flutter_vg as aero_flutter
+    AEROELASTICITY_AVAILABLE = True
+except ImportError:
+    aero_div = aero_rev = aero_flutter = None
+    AEROELASTICITY_AVAILABLE = False
 
 import logging
 
@@ -26,6 +37,12 @@ logging.basicConfig(
     datefmt="%Y-%m-%d %H:%M:%S",
 )
 logger = logging.getLogger(__name__)
+
+if not AEROELASTICITY_AVAILABLE:
+    logger.warning(
+        "Aeroelasticity modules (static_divergence/control_reversal/flutter_vg) "
+        "not found -- /aeroelasticity/* endpoints will return 503"
+    )
 
 limiter = Limiter(key_func=get_remote_address)
 app = FastAPI(title="Student Airfoil CFD Tool")
@@ -1004,6 +1021,8 @@ async def aeroelasticity_divergence(
     v_step: float = Form(3.0),
     v_max: float = Form(150.0),
 ):
+    if not AEROELASTICITY_AVAILABLE:
+        raise HTTPException(status_code=503, detail="Aeroelasticity module not available on this deployment")
     if not (MIN_REYNOLDS <= reynolds <= MAX_REYNOLDS):
         raise HTTPException(status_code=400,
             detail=f"Reynolds must be {MIN_REYNOLDS:,.0f} to {MAX_REYNOLDS:,.0f}")
@@ -1075,6 +1094,8 @@ async def aeroelasticity_reversal(
     v_step: float = Form(2.0),
     v_max: float = Form(150.0),
 ):
+    if not AEROELASTICITY_AVAILABLE:
+        raise HTTPException(status_code=503, detail="Aeroelasticity module not available on this deployment")
     if not (MIN_REYNOLDS <= reynolds <= MAX_REYNOLDS):
         raise HTTPException(status_code=400,
             detail=f"Reynolds must be {MIN_REYNOLDS:,.0f} to {MAX_REYNOLDS:,.0f}")
@@ -1160,6 +1181,8 @@ async def aeroelasticity_flutter(
     v_step: float = Form(0.5),
     v_max: float = Form(100.0),
 ):
+    if not AEROELASTICITY_AVAILABLE:
+        raise HTTPException(status_code=503, detail="Aeroelasticity module not available on this deployment")
     if not (MIN_REYNOLDS <= reynolds <= MAX_REYNOLDS):
         raise HTTPException(status_code=400,
             detail=f"Reynolds must be {MIN_REYNOLDS:,.0f} to {MAX_REYNOLDS:,.0f}")
