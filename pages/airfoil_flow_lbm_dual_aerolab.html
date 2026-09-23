@@ -59,7 +59,7 @@
   <div class="cr2">
     <span class="cl2">Flow speed</span>
     <input type="range" id="us2-shared" min="30" max="100" value="60" step="2" style="flex:1">
-    <span class="cv2" id="uv2-shared">0.060</span>
+    <span class="cv2" id="uv2-shared">30.0 m/s</span>
   </div>
 
   <div class="cr2">
@@ -71,10 +71,11 @@
   <div class="lbm-dual-grid">
     <div id="fw2A">
       <div class="lbm-dual-name">%%USER_NAME_A%%</div>
-      <canvas id="fc2A" width="680" height="360"></canvas>
+      <canvas id="fc2A" width="780" height="360"></canvas>
       <div class="sr2">
         <div class="st2"><div class="sl2">CL (approx)</div><div class="sv2" id="clv2A">&mdash;</div></div>
         <div class="st2"><div class="sl2">CD (approx)</div><div class="sv2" id="cdv2A">&mdash;</div></div>
+        <div class="st2"><div class="sl2">Flow speed</div><div class="sv2" id="spv2A">&mdash;</div></div>
         <div class="st2"><div class="sl2">Reynolds</div><div class="sv2" id="rev2A">&mdash;</div></div>
         <div class="st2" id="sep-cardA"><div class="sl2">Separation</div><div class="sv2" id="sepv2A">&mdash;</div></div>
       </div>
@@ -82,10 +83,11 @@
     </div>
     <div id="fw2B">
       <div class="lbm-dual-name">%%USER_NAME_B%%</div>
-      <canvas id="fc2B" width="680" height="360"></canvas>
+      <canvas id="fc2B" width="780" height="360"></canvas>
       <div class="sr2">
         <div class="st2"><div class="sl2">CL (approx)</div><div class="sv2" id="clv2B">&mdash;</div></div>
         <div class="st2"><div class="sl2">CD (approx)</div><div class="sv2" id="cdv2B">&mdash;</div></div>
+        <div class="st2"><div class="sl2">Flow speed</div><div class="sv2" id="spv2B">&mdash;</div></div>
         <div class="st2"><div class="sl2">Reynolds</div><div class="sv2" id="rev2B">&mdash;</div></div>
         <div class="st2" id="sep-cardB"><div class="sl2">Separation</div><div class="sv2" id="sepv2B">&mdash;</div></div>
       </div>
@@ -104,11 +106,30 @@ const USER_NAME   = %%USER_NAME_A%%;     // display name string
 
 const cv=document.getElementById('fc2A');
 const cx2=cv.getContext('2d');
-const W=680,H=360;
+const W=780,H=360; // widened from 680 to fit the colorbar's numeric range labels (see RIGHT_MARGIN below)
 
 const PX=54,PY=26;
-const PW=W-PX-42,PH=H-2*PY;
-const DX0=-0.42,DX1=1.42,DY0=-0.46,DY1=0.46;
+const RIGHT_MARGIN=142; // room for the colorbar itself plus its numeric range labels (was 42; the old labels were single words that just barely fit)
+const PW=W-PX-RIGHT_MARGIN,PH=H-2*PY;
+// Domain size relative to chord, in chord-lengths: was 1.84 long x 0.92 tall,
+// which is a much tighter blockage ratio than Kutta's own dev-tool config
+// (360x200 grid, chord=130 cells -> 2.77 long x 1.54 tall). A too-tight domain
+// artificially inflates force coefficients (classic wind-tunnel blockage
+// effect -- confined flow has to accelerate more around the body than it
+// would with more clearance), which is very likely why this demo's CL/CD ran
+// noticeably higher than Kutta's at the same conditions. Widened to roughly
+// match Kutta's clearance; NX/NY (grid cell counts) are unchanged, so this
+// also drops the effective chord-in-cells from ~174 to ~123 -- close to
+// Kutta's own 130, not a resolution loss relative to the reference.
+const DX0=-0.7,DX1=1.9,DY0=-0.75,DY1=0.75;
+
+// Display "zoom" window: purely a render-time crop, entirely separate from the
+// simulation domain above. The physics (grid, force integration, particle
+// advection) still runs on the full DX0..DX1/DY0..DY1 domain, so blockage
+// ratio and everything else is unaffected -- this only changes which part of
+// that domain gets drawn to the canvas, restoring the tighter framing the
+// simulation domain used to have before it was widened.
+const VX0=-0.42,VX1=1.42,VY0=-0.46,VY1=0.46;
 
 // ---------- lattice grid ----------
 const NX=320, NY=160;               // simulation / field-render resolution (2:1, matches domain aspect 1.84:0.92)
@@ -116,6 +137,26 @@ const CHORD_L = NX/(DX1-DX0);       // lattice cells per unit chord
 const TAU = 0.58;                   // BGK relaxation time (fixed)
 const NU_L = (TAU-0.5)/3;           // lattice viscosity
 const STEPS_PER_FRAME = 4;
+
+// Source rect (in glcv's NX x NY pixel space) corresponding to the view
+// window above, for cropping the WebGL field texture on draw.
+const VIEW_SX=(VX0-DX0)/(DX1-DX0)*NX, VIEW_SW=(VX1-VX0)/(DX1-DX0)*NX;
+const VIEW_SY=(DY1-VY1)/(DY1-DY0)*NY, VIEW_SH=(VY1-VY0)/(DY1-DY0)*NY;
+
+// ---------- physical reference scale for display purposes ----------
+// The LBM itself is fully non-dimensional (U0 is a lattice velocity with no
+// inherent physical unit). To show real-world numbers (m/s, textbook
+// Reynolds) we pick a reference physical speed range for the flow-speed
+// slider and a reference chord length; both are display-only and do not
+// affect the simulation itself.
+const U0_MIN = 0.03, U0_MAX = 0.10;     // matches the flow-speed slider's min=30/max=100 (value/1000)
+const V_MIN_MS = 15, V_MAX_MS = 50;     // physical speed range mapped onto that slider (m/s)
+const CHORD_M = 1.0;                    // reference chord length used only for the Reynolds display (m)
+const NU_AIR = 1.46e-5;                 // kinematic viscosity of air at sea level, ~15degC (m^2/s)
+function flowSpeedMs(){
+  const t = (U0-U0_MIN)/(U0_MAX-U0_MIN);
+  return V_MIN_MS + t*(V_MAX_MS-V_MIN_MS);
+}
 
 const pcv=document.createElement('canvas');
 pcv.width=W;pcv.height=H;
@@ -509,6 +550,25 @@ function makeFBO(texA,texB,texC){
 let sets=null, cur=0, maskTex=null;
 let U0=0.06;
 
+// ---------- settling boost ----------
+// Any parameter change (AoA, flow speed, geometry) leaves the flow mid-transient
+// from the old condition; the stat cards (CL/CD/etc) only become representative
+// once the wake has convected across the domain a few times, which at this
+// grid's real-time step rate can take tens of seconds -- long enough to look
+// like the numbers are just wrong rather than still settling. Rather than
+// blocking the page to fast-forward through that (which would freeze the
+// animation), extraSteps briefly raises how many lattice steps run per
+// rendered frame, decaying back to normal -- the sim visibly races through the
+// transient instead of crawling through it, while every frame still renders.
+let extraSteps=0;
+const BOOST_STEPS=40, SPEED_BOOST_STEPS=90, BOOST_DECAY=0.975;
+// Caps how many particle-advection sub-steps a single rendered frame traces
+// (see stepParticles below). Each particle still only costs one Path2D +
+// one stroke() call regardless of this number -- it only affects how many
+// points get added to that path, which is cheap.
+const SUBSTEP_CAP=16;
+function boostSettling(n){ extraSteps=Math.max(extraSteps, n===undefined?BOOST_STEPS:n); }
+
 function equilibriumInitData(u0){
   const w0=4/9,ws=1/9,wd=1/36;
   function feq(ex,ey,w){
@@ -621,6 +681,7 @@ function applyGeometry(shapeKeyArg,aDeg){
     maskTex=makeMaskTex(NX,NY,sol.IN);
   }
   document.getElementById('av2-shared').textContent=aDeg.toFixed(1)+'\u00b0';
+  boostSettling();
 }
 
 // ================= field arrays for particle sampling / stats =================
@@ -628,6 +689,13 @@ function applyGeometry(shapeKeyArg,aDeg){
 const Ufield=new Float32Array(NX*NY);
 const Vfield=new Float32Array(NX*NY);
 const CpField=new Float32Array(NX*NY);
+// Snapshots of Ufield/Vfield from the start of the current rendered frame
+// (before this frame's burst of lattice steps runs). Used to interpolate the
+// velocity a trail particle sees when several physics steps happen inside a
+// single rendered frame, so its path is sub-stepped smoothly through the
+// burst instead of jumping straight to the post-burst field -- see frame().
+const PrevUfield=new Float32Array(NX*NY);
+const PrevVfield=new Float32Array(NX*NY);
 let maxS=0.6, cpMin=-1, cpMax=1, maxVort=1;
 let statCounter=0;
 
@@ -669,9 +737,16 @@ function sampleScalar(field,wx,wy){
   return w>0?s/w:null;
 }
 
-function sampleUV(wx,wy){
-  const u=sampleScalar(Ufield,wx,wy);
-  const v=sampleScalar(Vfield,wx,wy);
+// frac is where in the current rendered frame's burst of lattice steps this
+// sample falls (0 = the field as it was at the start of the frame, 1 = the
+// field after all of this frame's steps ran). Blending the two lets a
+// particle move through an interpolated velocity across several sub-steps
+// instead of jumping straight from the old field to the fully-updated one.
+function sampleUV(wx,wy,frac){
+  const uOld=sampleScalar(PrevUfield,wx,wy), vOld=sampleScalar(PrevVfield,wx,wy);
+  const uNew=sampleScalar(Ufield,wx,wy), vNew=sampleScalar(Vfield,wx,wy);
+  const u=(uOld!==null&&uNew!==null)?uOld*(1-frac)+uNew*frac:uNew;
+  const v=(vOld!==null&&vNew!==null)?vOld*(1-frac)+vNew*frac:vNew;
   if(u===null||v===null) return null;
   return[u,v];
 }
@@ -699,6 +774,11 @@ function computeForces(){
         if(IN[nc]) continue; // need a fluid neighbor
         any=true;
         const rho=macro[nc*4+1];
+        // Matches the Kutta reference solver's computeForce() exactly (raw p=rho/3,
+        // not a perturbation). The two are mathematically identical here: the sum
+        // of outward face normals around any closed, domain-clear solid mask is
+        // exactly zero, so a constant background pressure term contributes nothing
+        // to the integrated force regardless of which of the two forms is used.
         const p=rho/3;
         // Force on the body points from the fluid cell into the solid, i.e.
         // along (-FACE_DX[j],-FACE_DY[j]) relative to the fluid cell (nc->c).
@@ -748,6 +828,10 @@ function lerpScale(t,S){
 }
 const SPEED_SCALE=[[5,5,20],[0,20,120],[0,60,200],[0,140,220],[0,220,220],[0,210,140],[80,200,0],[220,210,0],[255,120,0],[220,20,0]];
 const CP_SCALE=[[20,50,160],[40,110,210],[100,175,235],[190,220,245],[248,248,248],[248,214,140],[240,150,60],[205,50,25]];
+// Fixed trail tint used only in pressure mode -- a warm amber that stays
+// visible against every stop of CP_SCALE above (including its white
+// midpoint), unlike the white trail used elsewhere.
+const PRESSURE_TINT=[255,193,66];
 function cmap(t){return lerpScale(t,SPEED_SCALE);}
 function cmapCp(t){return lerpScale(t,CP_SCALE);}
 function cmapVort(t){
@@ -789,18 +873,26 @@ function initParts(){
     parts.push(p);
   }
 }
-function advect(p,dtFrame){
-  const kBase=0.00105*dtFrame; // tuned to ~3 lattice cells/frame at freestream, matching Kutta's dt
-  const uv1=sampleUV(p.x,p.y);
-  if(!uv1)return null;
-  const[u1,v1]=uv1;
+// sampleUV() returns velocity NORMALIZED by U0 (see updateFieldsFromMacro).
+// That's fine for the colour field (which is itself U0-normalized), but the
+// trail particles used to be advected directly off that normalized value,
+// which made trail speed completely independent of the flow-speed slider --
+// the bug behind "the airflow doesn't seem to speed up". Fix: multiply the
+// sampled velocity back up by the *current* U0 before using it to move a
+// particle, so trail speed genuinely tracks the flow-speed slider.
+const U0_REF = 0.06; // slider's default U0 -- the value kBase below was originally tuned against
+function advect(p,dtFrame,frac){
+  const kBase=0.00105*dtFrame/U0_REF; // tuned to ~3 lattice cells/frame at freestream *at the reference flow speed*; scales with U0 below
+  const uv1n=sampleUV(p.x,p.y,frac);
+  if(!uv1n)return null;
+  const u1=uv1n[0]*U0, v1=uv1n[1]*U0; // undo the U0 normalization -> real, flow-speed-dependent velocity
   const speed1=Math.hypot(u1,v1);
   let dtEff=kBase;
-  const maxDisp=0.05; // raised to match Kutta's uncapped fast-region streaks
+  const maxDisp=0.075; // loosened from 0.05 -- the tighter cap was flattening the fastest near-body streaks to a constant length right where speed differences are most visible
   if(speed1*dtEff>maxDisp)dtEff=maxDisp/Math.max(speed1,1e-6);
   const midx=p.x+u1*dtEff*0.5,midy=p.y+v1*dtEff*0.5;
-  const uv2=sampleUV(midx,midy)||uv1;
-  const[u2,v2]=uv2;
+  const uv2n=sampleUV(midx,midy,frac)||uv1n;
+  const u2=uv2n[0]*U0, v2=uv2n[1]*U0;
   return{nx:p.x+u2*dtEff,ny:p.y+v2*dtEff,speed:Math.hypot(u2,v2)};
 }
 // Stall threshold: below this speed the particle is in a recirculation zone.
@@ -808,45 +900,75 @@ function advect(p,dtFrame){
 // swirling recirculation for a while before fading — keeping the wake vortex
 // visible. STALL_DRAIN is tuned so a stalled particle survives ~2-3 seconds
 // of recirculation before respawning.
-// Stall threshold matched to Kutta's raw lattice-unit check ux²+uy²<1e-8.
-// sampleUV returns velocity normalized by U0, so the equivalent threshold
-// in normalized units is 1e-8/U0² ≈ 2.8e-6 at U0=0.06. We use 3e-6 as a
-// round number — same physical condition, just expressed in normalized speed.
-const STALL_SPEED2=3e-6;
+// Stall threshold matches Kutta's raw lattice-unit check ux²+uy²<1e-8.
+// advect() now returns REAL (un-normalized) speed, so this compares directly
+// against that same raw lattice threshold -- no U0-dependent conversion needed.
+const STALL_SPEED2=1e-8;
 const STALL_DRAIN=0.18; // extra life drain per dt tick when stalled
 
-function stepParticles(dt){
+// Fades the previous frame's trails. Always called exactly once per rendered
+// frame regardless of how many particle sub-steps that frame traces.
+function fadeTrails(){
   pctx.globalCompositeOperation='destination-out';
   pctx.fillStyle='rgba(0,0,0,0.055)';
   pctx.fillRect(0,0,W,H);
   pctx.globalCompositeOperation='source-over';
   pctx.lineCap='round';
+}
+
+// nSub sub-steps a particle's advection through this frame, each sampling a
+// blend of the pre- and post-burst velocity field (see sampleUV/advect), so
+// a particle's path is traced smoothly through a settling boost instead of
+// jumping straight to the post-burst position. All of a particle's sub-step
+// segments are accumulated into ONE Path2D and drawn with a single stroke()
+// call -- the cost that matters for frame rate is draw calls, not the extra
+// math, so this keeps draw-call count the same as unboosted (non-substepped)
+// playback no matter how large nSub gets.
+function stepParticles(dt,nSub){
+  fadeTrails();
+  const subDt=dt/nSub;
   for(let i=0;i<parts.length;i++){
     const p=parts[i];
-    const adv=advect(p,dt);
-    const stalled = adv!==null && (adv.speed*adv.speed<STALL_SPEED2);
+    const cx1=w2cX(p.x),cy1=w2cY(p.y);
+    let path=null, lastAdv=null, died=false;
+    for(let k=0;k<nSub;k++){
+      const frac=(k+1)/nSub;
+      const adv=advect(p,subDt,frac);
+      if(!adv){ died=true; break; }
+      lastAdv=adv;
+      if(!path){ path=new Path2D(); path.moveTo(cx1,cy1); }
+      path.lineTo(w2cX(adv.nx),w2cY(adv.ny));
+      p.x=adv.nx; p.y=adv.ny;
+    }
+    const stalled = lastAdv!==null && (lastAdv.speed*lastAdv.speed<STALL_SPEED2);
     // Stalled particles drain faster but stay visible long enough to trace
     // the recirculation bubble before fading out — not instantly killed.
     p.life -= dt * (stalled ? STALL_DRAIN : 0.06);
-    if(!adv||p.life<=0){parts[i]=spawn(true,p.lane);continue;}
-    const{nx,ny,speed}=adv;
-    const cx1=w2cX(p.x),cy1=w2cY(p.y);
-    const cx2b=w2cX(nx),cy2b=w2cY(ny);
-    const t=Math.min(speed/(maxS*0.92),1);
-    const[r,g,b]=cmap(t);
-    const lum=0.55+t*0.45;
-    pctx.strokeStyle=`rgba(${Math.round(r*0.4+255*0.6*lum)},${Math.round(g*0.4+255*0.6*lum)},${Math.round(b*0.4+255*0.6*lum)},0.75)`;
+    if(died||!lastAdv||p.life<=0){parts[i]=spawn(true,p.lane);continue;}
+    const speed=lastAdv.speed;
+    const t=Math.min((speed/U0)/(maxS*0.92),1); // speed is real (un-normalized); maxS is tracked in U0-normalized units, so divide back down before comparing
+    // Trail colour depends on the selected field mode:
+    //  - velocity: tinted with the speed colormap (the original look)
+    //  - vorticity: plain white, but lower alpha so it reads as an overlay
+    //    instead of competing with the red/blue vorticity field underneath
+    //  - pressure: a fixed warm amber -- white would vanish against the
+    //    Cp scale's own white midpoint, so it needs a colour the scale
+    //    (blue - white - orange/red) never uses
+    if(fieldMode===2){
+      const w=Math.round(160+t*95);
+      pctx.strokeStyle=`rgba(${w},${w},${w},0.4)`;
+    }else{
+      const[r,g,b]=fieldMode===1?PRESSURE_TINT:cmap(t);
+      const lum=0.55+t*0.45;
+      pctx.strokeStyle=`rgba(${Math.round(r*0.4+255*0.6*lum)},${Math.round(g*0.4+255*0.6*lum)},${Math.round(b*0.4+255*0.6*lum)},0.75)`;
+    }
     pctx.lineWidth=1.1;
-    pctx.beginPath();
-    pctx.moveTo(cx1,cy1);
-    pctx.lineTo(cx2b,cy2b);
-    pctx.stroke();
-    p.x=nx;p.y=ny;
+    pctx.stroke(path);
   }
 }
 
-function w2cX(x){return PX+(x-DX0)/(DX1-DX0)*PW;}
-function w2cY(y){return PY+(1-(y-DY0)/(DY1-DY0))*PH;}
+function w2cX(x){return PX+(x-VX0)/(VX1-VX0)*PW;}
+function w2cY(y){return PY+(1-(y-VY0)/(VY1-VY0))*PH;}
 
 // ================= drawing (mostly unchanged from the original) =================
 
@@ -866,7 +988,7 @@ function drawFoil(){
 }
 
 function drawBar(){
-  const bx=W-32,by=PY,bw=10,bh=PH;
+  const bx=PX+PW+14,by=PY,bw=10,bh=PH; // anchored off the plot's right edge, not a raw canvas-width offset
   for(let i=0;i<bh;i++){
     let r,g,b;
     if(fieldMode===1)[r,g,b]=cmapCp(1-i/bh);
@@ -878,8 +1000,22 @@ function drawBar(){
   cx2.fillStyle='rgba(255,255,255,0.55)';
   cx2.font='10px system-ui';
   cx2.textAlign='left';
-  const top = fieldMode===1?'+Cp':(fieldMode===2?'CCW':'fast');
-  const bot = fieldMode===1?'-Cp':(fieldMode===2?'CW':'slow');
+  // Numeric range labels matching the exact full-scale value each colour
+  // map is normalized against (see the render shader / updateFieldsFromMacro),
+  // so the printed numbers always match what's actually drawn.
+  let top, bot;
+  if(fieldMode===1){
+    top = `+Cp ${cpMax.toFixed(2)}`;
+    bot = `−Cp ${cpMin.toFixed(2)}`;
+  } else if(fieldMode===2){
+    const vScale = U0*VORT_SCALE; // full-scale vorticity value (matches shader's t=vort/(U0*VORT_SCALE))
+    top = `CCW ${vScale.toFixed(3)}`;
+    bot = `CW −${vScale.toFixed(3)}`;
+  } else {
+    const speedTop = flowSpeedMs()*maxS*0.92; // full-scale speed (matches shader's t=s/(maxS*0.92)), in m/s
+    top = `fast ${speedTop.toFixed(1)} m/s`;
+    bot = `slow 0 m/s`;
+  }
   cx2.fillText(top,bx+bw+3,by+9);
   cx2.fillText(bot,bx+bw+3,by+bh-1);
 }
@@ -890,7 +1026,7 @@ function drawLabels(){
   cx2.textAlign='center';
   for(const xv of[0,0.5,1.0]) cx2.fillText(xv.toFixed(1),w2cX(xv),H-8);
   cx2.textAlign='right';
-  for(const yv of[-0.4,0,0.4]) cx2.fillText(yv.toFixed(1),PX-6,w2cY(yv)+3);
+  for(const yv of[VY0*0.85,0,VY1*0.85]) cx2.fillText(yv.toFixed(1),PX-6,w2cY(yv)+3);
   cx2.fillStyle='rgba(255,255,255,0.75)';
   cx2.font='12px system-ui';
   cx2.textAlign='left';
@@ -900,7 +1036,12 @@ function drawLabels(){
 function updateStatsUI(){
   document.getElementById('clv2A').textContent = CLsmooth===null?'\u2014':CLsmooth.toFixed(3);
   document.getElementById('cdv2A').textContent = CDsmooth===null?'\u2014':Math.max(CDsmooth,0).toFixed(3);
-  const Re = U0*CHORD_L/NU_L;
+  // Standard (textbook) Reynolds number Re = V*c/nu, from the physical flow
+  // speed shown above and a reference chord/air-viscosity -- NOT the LBM's
+  // own internal lattice Reynolds number, which has no direct physical meaning.
+  const V_ms = flowSpeedMs();
+  const Re = V_ms*CHORD_M/NU_AIR;
+  document.getElementById('spv2A').textContent = V_ms.toFixed(1)+' m/s';
   document.getElementById('rev2A').textContent = Math.round(Re).toLocaleString();
 
   // Separation / stall indicator
@@ -943,8 +1084,19 @@ function frame(t){
 
   if(!glOK){ drawFallback(); requestAnimationFrame(frame); return; }
 
-  for(let s=0;s<STEPS_PER_FRAME;s++) simStep();
+  const stepsThisFrame=STEPS_PER_FRAME+Math.round(extraSteps);
+  // How many physics steps beyond the norm happened this frame, in "safe
+  // units" of STEPS_PER_FRAME (the rate that's always looked smooth). Used
+  // below to decide how many particle sub-steps to trace through the burst.
+  const nSub=Math.max(1,Math.min(SUBSTEP_CAP,Math.round(stepsThisFrame/STEPS_PER_FRAME)));
+  for(let s=0;s<stepsThisFrame;s++) simStep();
+  extraSteps = extraSteps>0.5 ? extraSteps*BOOST_DECAY : 0;
   renderField(maxS,cpMin,cpMax);
+  // Snapshot the pre-burst field before it's overwritten below, so particle
+  // sub-stepping can interpolate between "start of this frame" and "after all
+  // of this frame's lattice steps" instead of jumping straight to the latter.
+  PrevUfield.set(Ufield);
+  PrevVfield.set(Vfield);
   readMacro();
   updateFieldsFromMacro();
 
@@ -952,15 +1104,20 @@ function frame(t){
   if(statCounter%3===0) computeForces();
   if(statCounter%10===0) updateStatsUI();
 
-  stepParticles(dt);
+  stepParticles(dt,nSub);
 
   cx2.fillStyle='#0a0d18';
   cx2.fillRect(0,0,W,H);
   cx2.imageSmoothingEnabled=true;
   cx2.imageSmoothingQuality='high';
-  cx2.drawImage(glcv,PX,PY,PW,PH);
+  cx2.save();
+  cx2.beginPath();
+  cx2.rect(PX,PY,PW,PH); // clip so particles simulated outside the zoomed view (they still exist -- the sim domain is wider than what's shown) never bleed into the axis/colorbar margins
+  cx2.clip();
+  cx2.drawImage(glcv,VIEW_SX,VIEW_SY,VIEW_SW,VIEW_SH,PX,PY,PW,PH);
   cx2.drawImage(pcv,0,0);
   drawFoil();
+  cx2.restore();
   drawBar();
   drawLabels();
 
@@ -993,7 +1150,8 @@ document.getElementById('fd2-shared').addEventListener('change',function(){
 
 document.getElementById('us2-shared').addEventListener('input',function(){
   U0=parseInt(this.value)/1000;
-  document.getElementById('uv2-shared').textContent=U0.toFixed(3);
+  document.getElementById('uv2-shared').textContent=flowSpeedMs().toFixed(1)+' m/s';
+  boostSettling(SPEED_BOOST_STEPS);
 });
 
 document.getElementById('ps2-shared').addEventListener('input',function(){
@@ -1048,11 +1206,30 @@ const USER_NAME   = %%USER_NAME_B%%;     // display name string
 
 const cv=document.getElementById('fc2B');
 const cx2=cv.getContext('2d');
-const W=680,H=360;
+const W=780,H=360; // widened from 680 to fit the colorbar's numeric range labels (see RIGHT_MARGIN below)
 
 const PX=54,PY=26;
-const PW=W-PX-42,PH=H-2*PY;
-const DX0=-0.42,DX1=1.42,DY0=-0.46,DY1=0.46;
+const RIGHT_MARGIN=142; // room for the colorbar itself plus its numeric range labels (was 42; the old labels were single words that just barely fit)
+const PW=W-PX-RIGHT_MARGIN,PH=H-2*PY;
+// Domain size relative to chord, in chord-lengths: was 1.84 long x 0.92 tall,
+// which is a much tighter blockage ratio than Kutta's own dev-tool config
+// (360x200 grid, chord=130 cells -> 2.77 long x 1.54 tall). A too-tight domain
+// artificially inflates force coefficients (classic wind-tunnel blockage
+// effect -- confined flow has to accelerate more around the body than it
+// would with more clearance), which is very likely why this demo's CL/CD ran
+// noticeably higher than Kutta's at the same conditions. Widened to roughly
+// match Kutta's clearance; NX/NY (grid cell counts) are unchanged, so this
+// also drops the effective chord-in-cells from ~174 to ~123 -- close to
+// Kutta's own 130, not a resolution loss relative to the reference.
+const DX0=-0.7,DX1=1.9,DY0=-0.75,DY1=0.75;
+
+// Display "zoom" window: purely a render-time crop, entirely separate from the
+// simulation domain above. The physics (grid, force integration, particle
+// advection) still runs on the full DX0..DX1/DY0..DY1 domain, so blockage
+// ratio and everything else is unaffected -- this only changes which part of
+// that domain gets drawn to the canvas, restoring the tighter framing the
+// simulation domain used to have before it was widened.
+const VX0=-0.42,VX1=1.42,VY0=-0.46,VY1=0.46;
 
 // ---------- lattice grid ----------
 const NX=320, NY=160;               // simulation / field-render resolution (2:1, matches domain aspect 1.84:0.92)
@@ -1060,6 +1237,26 @@ const CHORD_L = NX/(DX1-DX0);       // lattice cells per unit chord
 const TAU = 0.58;                   // BGK relaxation time (fixed)
 const NU_L = (TAU-0.5)/3;           // lattice viscosity
 const STEPS_PER_FRAME = 4;
+
+// Source rect (in glcv's NX x NY pixel space) corresponding to the view
+// window above, for cropping the WebGL field texture on draw.
+const VIEW_SX=(VX0-DX0)/(DX1-DX0)*NX, VIEW_SW=(VX1-VX0)/(DX1-DX0)*NX;
+const VIEW_SY=(DY1-VY1)/(DY1-DY0)*NY, VIEW_SH=(VY1-VY0)/(DY1-DY0)*NY;
+
+// ---------- physical reference scale for display purposes ----------
+// The LBM itself is fully non-dimensional (U0 is a lattice velocity with no
+// inherent physical unit). To show real-world numbers (m/s, textbook
+// Reynolds) we pick a reference physical speed range for the flow-speed
+// slider and a reference chord length; both are display-only and do not
+// affect the simulation itself.
+const U0_MIN = 0.03, U0_MAX = 0.10;     // matches the flow-speed slider's min=30/max=100 (value/1000)
+const V_MIN_MS = 15, V_MAX_MS = 50;     // physical speed range mapped onto that slider (m/s)
+const CHORD_M = 1.0;                    // reference chord length used only for the Reynolds display (m)
+const NU_AIR = 1.46e-5;                 // kinematic viscosity of air at sea level, ~15degC (m^2/s)
+function flowSpeedMs(){
+  const t = (U0-U0_MIN)/(U0_MAX-U0_MIN);
+  return V_MIN_MS + t*(V_MAX_MS-V_MIN_MS);
+}
 
 const pcv=document.createElement('canvas');
 pcv.width=W;pcv.height=H;
@@ -1453,6 +1650,25 @@ function makeFBO(texA,texB,texC){
 let sets=null, cur=0, maskTex=null;
 let U0=0.06;
 
+// ---------- settling boost ----------
+// Any parameter change (AoA, flow speed, geometry) leaves the flow mid-transient
+// from the old condition; the stat cards (CL/CD/etc) only become representative
+// once the wake has convected across the domain a few times, which at this
+// grid's real-time step rate can take tens of seconds -- long enough to look
+// like the numbers are just wrong rather than still settling. Rather than
+// blocking the page to fast-forward through that (which would freeze the
+// animation), extraSteps briefly raises how many lattice steps run per
+// rendered frame, decaying back to normal -- the sim visibly races through the
+// transient instead of crawling through it, while every frame still renders.
+let extraSteps=0;
+const BOOST_STEPS=40, SPEED_BOOST_STEPS=90, BOOST_DECAY=0.975;
+// Caps how many particle-advection sub-steps a single rendered frame traces
+// (see stepParticles below). Each particle still only costs one Path2D +
+// one stroke() call regardless of this number -- it only affects how many
+// points get added to that path, which is cheap.
+const SUBSTEP_CAP=16;
+function boostSettling(n){ extraSteps=Math.max(extraSteps, n===undefined?BOOST_STEPS:n); }
+
 function equilibriumInitData(u0){
   const w0=4/9,ws=1/9,wd=1/36;
   function feq(ex,ey,w){
@@ -1565,6 +1781,7 @@ function applyGeometry(shapeKeyArg,aDeg){
     maskTex=makeMaskTex(NX,NY,sol.IN);
   }
   document.getElementById('av2-shared').textContent=aDeg.toFixed(1)+'\u00b0';
+  boostSettling();
 }
 
 // ================= field arrays for particle sampling / stats =================
@@ -1572,6 +1789,13 @@ function applyGeometry(shapeKeyArg,aDeg){
 const Ufield=new Float32Array(NX*NY);
 const Vfield=new Float32Array(NX*NY);
 const CpField=new Float32Array(NX*NY);
+// Snapshots of Ufield/Vfield from the start of the current rendered frame
+// (before this frame's burst of lattice steps runs). Used to interpolate the
+// velocity a trail particle sees when several physics steps happen inside a
+// single rendered frame, so its path is sub-stepped smoothly through the
+// burst instead of jumping straight to the post-burst field -- see frame().
+const PrevUfield=new Float32Array(NX*NY);
+const PrevVfield=new Float32Array(NX*NY);
 let maxS=0.6, cpMin=-1, cpMax=1, maxVort=1;
 let statCounter=0;
 
@@ -1613,9 +1837,16 @@ function sampleScalar(field,wx,wy){
   return w>0?s/w:null;
 }
 
-function sampleUV(wx,wy){
-  const u=sampleScalar(Ufield,wx,wy);
-  const v=sampleScalar(Vfield,wx,wy);
+// frac is where in the current rendered frame's burst of lattice steps this
+// sample falls (0 = the field as it was at the start of the frame, 1 = the
+// field after all of this frame's steps ran). Blending the two lets a
+// particle move through an interpolated velocity across several sub-steps
+// instead of jumping straight from the old field to the fully-updated one.
+function sampleUV(wx,wy,frac){
+  const uOld=sampleScalar(PrevUfield,wx,wy), vOld=sampleScalar(PrevVfield,wx,wy);
+  const uNew=sampleScalar(Ufield,wx,wy), vNew=sampleScalar(Vfield,wx,wy);
+  const u=(uOld!==null&&uNew!==null)?uOld*(1-frac)+uNew*frac:uNew;
+  const v=(vOld!==null&&vNew!==null)?vOld*(1-frac)+vNew*frac:vNew;
   if(u===null||v===null) return null;
   return[u,v];
 }
@@ -1643,6 +1874,11 @@ function computeForces(){
         if(IN[nc]) continue; // need a fluid neighbor
         any=true;
         const rho=macro[nc*4+1];
+        // Matches the Kutta reference solver's computeForce() exactly (raw p=rho/3,
+        // not a perturbation). The two are mathematically identical here: the sum
+        // of outward face normals around any closed, domain-clear solid mask is
+        // exactly zero, so a constant background pressure term contributes nothing
+        // to the integrated force regardless of which of the two forms is used.
         const p=rho/3;
         // Force on the body points from the fluid cell into the solid, i.e.
         // along (-FACE_DX[j],-FACE_DY[j]) relative to the fluid cell (nc->c).
@@ -1692,6 +1928,10 @@ function lerpScale(t,S){
 }
 const SPEED_SCALE=[[5,5,20],[0,20,120],[0,60,200],[0,140,220],[0,220,220],[0,210,140],[80,200,0],[220,210,0],[255,120,0],[220,20,0]];
 const CP_SCALE=[[20,50,160],[40,110,210],[100,175,235],[190,220,245],[248,248,248],[248,214,140],[240,150,60],[205,50,25]];
+// Fixed trail tint used only in pressure mode -- a warm amber that stays
+// visible against every stop of CP_SCALE above (including its white
+// midpoint), unlike the white trail used elsewhere.
+const PRESSURE_TINT=[255,193,66];
 function cmap(t){return lerpScale(t,SPEED_SCALE);}
 function cmapCp(t){return lerpScale(t,CP_SCALE);}
 function cmapVort(t){
@@ -1733,18 +1973,26 @@ function initParts(){
     parts.push(p);
   }
 }
-function advect(p,dtFrame){
-  const kBase=0.00105*dtFrame; // tuned to ~3 lattice cells/frame at freestream, matching Kutta's dt
-  const uv1=sampleUV(p.x,p.y);
-  if(!uv1)return null;
-  const[u1,v1]=uv1;
+// sampleUV() returns velocity NORMALIZED by U0 (see updateFieldsFromMacro).
+// That's fine for the colour field (which is itself U0-normalized), but the
+// trail particles used to be advected directly off that normalized value,
+// which made trail speed completely independent of the flow-speed slider --
+// the bug behind "the airflow doesn't seem to speed up". Fix: multiply the
+// sampled velocity back up by the *current* U0 before using it to move a
+// particle, so trail speed genuinely tracks the flow-speed slider.
+const U0_REF = 0.06; // slider's default U0 -- the value kBase below was originally tuned against
+function advect(p,dtFrame,frac){
+  const kBase=0.00105*dtFrame/U0_REF; // tuned to ~3 lattice cells/frame at freestream *at the reference flow speed*; scales with U0 below
+  const uv1n=sampleUV(p.x,p.y,frac);
+  if(!uv1n)return null;
+  const u1=uv1n[0]*U0, v1=uv1n[1]*U0; // undo the U0 normalization -> real, flow-speed-dependent velocity
   const speed1=Math.hypot(u1,v1);
   let dtEff=kBase;
-  const maxDisp=0.05; // raised to match Kutta's uncapped fast-region streaks
+  const maxDisp=0.075; // loosened from 0.05 -- the tighter cap was flattening the fastest near-body streaks to a constant length right where speed differences are most visible
   if(speed1*dtEff>maxDisp)dtEff=maxDisp/Math.max(speed1,1e-6);
   const midx=p.x+u1*dtEff*0.5,midy=p.y+v1*dtEff*0.5;
-  const uv2=sampleUV(midx,midy)||uv1;
-  const[u2,v2]=uv2;
+  const uv2n=sampleUV(midx,midy,frac)||uv1n;
+  const u2=uv2n[0]*U0, v2=uv2n[1]*U0;
   return{nx:p.x+u2*dtEff,ny:p.y+v2*dtEff,speed:Math.hypot(u2,v2)};
 }
 // Stall threshold: below this speed the particle is in a recirculation zone.
@@ -1752,45 +2000,75 @@ function advect(p,dtFrame){
 // swirling recirculation for a while before fading — keeping the wake vortex
 // visible. STALL_DRAIN is tuned so a stalled particle survives ~2-3 seconds
 // of recirculation before respawning.
-// Stall threshold matched to Kutta's raw lattice-unit check ux²+uy²<1e-8.
-// sampleUV returns velocity normalized by U0, so the equivalent threshold
-// in normalized units is 1e-8/U0² ≈ 2.8e-6 at U0=0.06. We use 3e-6 as a
-// round number — same physical condition, just expressed in normalized speed.
-const STALL_SPEED2=3e-6;
+// Stall threshold matches Kutta's raw lattice-unit check ux²+uy²<1e-8.
+// advect() now returns REAL (un-normalized) speed, so this compares directly
+// against that same raw lattice threshold -- no U0-dependent conversion needed.
+const STALL_SPEED2=1e-8;
 const STALL_DRAIN=0.18; // extra life drain per dt tick when stalled
 
-function stepParticles(dt){
+// Fades the previous frame's trails. Always called exactly once per rendered
+// frame regardless of how many particle sub-steps that frame traces.
+function fadeTrails(){
   pctx.globalCompositeOperation='destination-out';
   pctx.fillStyle='rgba(0,0,0,0.055)';
   pctx.fillRect(0,0,W,H);
   pctx.globalCompositeOperation='source-over';
   pctx.lineCap='round';
+}
+
+// nSub sub-steps a particle's advection through this frame, each sampling a
+// blend of the pre- and post-burst velocity field (see sampleUV/advect), so
+// a particle's path is traced smoothly through a settling boost instead of
+// jumping straight to the post-burst position. All of a particle's sub-step
+// segments are accumulated into ONE Path2D and drawn with a single stroke()
+// call -- the cost that matters for frame rate is draw calls, not the extra
+// math, so this keeps draw-call count the same as unboosted (non-substepped)
+// playback no matter how large nSub gets.
+function stepParticles(dt,nSub){
+  fadeTrails();
+  const subDt=dt/nSub;
   for(let i=0;i<parts.length;i++){
     const p=parts[i];
-    const adv=advect(p,dt);
-    const stalled = adv!==null && (adv.speed*adv.speed<STALL_SPEED2);
+    const cx1=w2cX(p.x),cy1=w2cY(p.y);
+    let path=null, lastAdv=null, died=false;
+    for(let k=0;k<nSub;k++){
+      const frac=(k+1)/nSub;
+      const adv=advect(p,subDt,frac);
+      if(!adv){ died=true; break; }
+      lastAdv=adv;
+      if(!path){ path=new Path2D(); path.moveTo(cx1,cy1); }
+      path.lineTo(w2cX(adv.nx),w2cY(adv.ny));
+      p.x=adv.nx; p.y=adv.ny;
+    }
+    const stalled = lastAdv!==null && (lastAdv.speed*lastAdv.speed<STALL_SPEED2);
     // Stalled particles drain faster but stay visible long enough to trace
     // the recirculation bubble before fading out — not instantly killed.
     p.life -= dt * (stalled ? STALL_DRAIN : 0.06);
-    if(!adv||p.life<=0){parts[i]=spawn(true,p.lane);continue;}
-    const{nx,ny,speed}=adv;
-    const cx1=w2cX(p.x),cy1=w2cY(p.y);
-    const cx2b=w2cX(nx),cy2b=w2cY(ny);
-    const t=Math.min(speed/(maxS*0.92),1);
-    const[r,g,b]=cmap(t);
-    const lum=0.55+t*0.45;
-    pctx.strokeStyle=`rgba(${Math.round(r*0.4+255*0.6*lum)},${Math.round(g*0.4+255*0.6*lum)},${Math.round(b*0.4+255*0.6*lum)},0.75)`;
+    if(died||!lastAdv||p.life<=0){parts[i]=spawn(true,p.lane);continue;}
+    const speed=lastAdv.speed;
+    const t=Math.min((speed/U0)/(maxS*0.92),1); // speed is real (un-normalized); maxS is tracked in U0-normalized units, so divide back down before comparing
+    // Trail colour depends on the selected field mode:
+    //  - velocity: tinted with the speed colormap (the original look)
+    //  - vorticity: plain white, but lower alpha so it reads as an overlay
+    //    instead of competing with the red/blue vorticity field underneath
+    //  - pressure: a fixed warm amber -- white would vanish against the
+    //    Cp scale's own white midpoint, so it needs a colour the scale
+    //    (blue - white - orange/red) never uses
+    if(fieldMode===2){
+      const w=Math.round(160+t*95);
+      pctx.strokeStyle=`rgba(${w},${w},${w},0.4)`;
+    }else{
+      const[r,g,b]=fieldMode===1?PRESSURE_TINT:cmap(t);
+      const lum=0.55+t*0.45;
+      pctx.strokeStyle=`rgba(${Math.round(r*0.4+255*0.6*lum)},${Math.round(g*0.4+255*0.6*lum)},${Math.round(b*0.4+255*0.6*lum)},0.75)`;
+    }
     pctx.lineWidth=1.1;
-    pctx.beginPath();
-    pctx.moveTo(cx1,cy1);
-    pctx.lineTo(cx2b,cy2b);
-    pctx.stroke();
-    p.x=nx;p.y=ny;
+    pctx.stroke(path);
   }
 }
 
-function w2cX(x){return PX+(x-DX0)/(DX1-DX0)*PW;}
-function w2cY(y){return PY+(1-(y-DY0)/(DY1-DY0))*PH;}
+function w2cX(x){return PX+(x-VX0)/(VX1-VX0)*PW;}
+function w2cY(y){return PY+(1-(y-VY0)/(VY1-VY0))*PH;}
 
 // ================= drawing (mostly unchanged from the original) =================
 
@@ -1810,7 +2088,7 @@ function drawFoil(){
 }
 
 function drawBar(){
-  const bx=W-32,by=PY,bw=10,bh=PH;
+  const bx=PX+PW+14,by=PY,bw=10,bh=PH; // anchored off the plot's right edge, not a raw canvas-width offset
   for(let i=0;i<bh;i++){
     let r,g,b;
     if(fieldMode===1)[r,g,b]=cmapCp(1-i/bh);
@@ -1822,8 +2100,22 @@ function drawBar(){
   cx2.fillStyle='rgba(255,255,255,0.55)';
   cx2.font='10px system-ui';
   cx2.textAlign='left';
-  const top = fieldMode===1?'+Cp':(fieldMode===2?'CCW':'fast');
-  const bot = fieldMode===1?'-Cp':(fieldMode===2?'CW':'slow');
+  // Numeric range labels matching the exact full-scale value each colour
+  // map is normalized against (see the render shader / updateFieldsFromMacro),
+  // so the printed numbers always match what's actually drawn.
+  let top, bot;
+  if(fieldMode===1){
+    top = `+Cp ${cpMax.toFixed(2)}`;
+    bot = `−Cp ${cpMin.toFixed(2)}`;
+  } else if(fieldMode===2){
+    const vScale = U0*VORT_SCALE; // full-scale vorticity value (matches shader's t=vort/(U0*VORT_SCALE))
+    top = `CCW ${vScale.toFixed(3)}`;
+    bot = `CW −${vScale.toFixed(3)}`;
+  } else {
+    const speedTop = flowSpeedMs()*maxS*0.92; // full-scale speed (matches shader's t=s/(maxS*0.92)), in m/s
+    top = `fast ${speedTop.toFixed(1)} m/s`;
+    bot = `slow 0 m/s`;
+  }
   cx2.fillText(top,bx+bw+3,by+9);
   cx2.fillText(bot,bx+bw+3,by+bh-1);
 }
@@ -1834,7 +2126,7 @@ function drawLabels(){
   cx2.textAlign='center';
   for(const xv of[0,0.5,1.0]) cx2.fillText(xv.toFixed(1),w2cX(xv),H-8);
   cx2.textAlign='right';
-  for(const yv of[-0.4,0,0.4]) cx2.fillText(yv.toFixed(1),PX-6,w2cY(yv)+3);
+  for(const yv of[VY0*0.85,0,VY1*0.85]) cx2.fillText(yv.toFixed(1),PX-6,w2cY(yv)+3);
   cx2.fillStyle='rgba(255,255,255,0.75)';
   cx2.font='12px system-ui';
   cx2.textAlign='left';
@@ -1844,7 +2136,12 @@ function drawLabels(){
 function updateStatsUI(){
   document.getElementById('clv2B').textContent = CLsmooth===null?'\u2014':CLsmooth.toFixed(3);
   document.getElementById('cdv2B').textContent = CDsmooth===null?'\u2014':Math.max(CDsmooth,0).toFixed(3);
-  const Re = U0*CHORD_L/NU_L;
+  // Standard (textbook) Reynolds number Re = V*c/nu, from the physical flow
+  // speed shown above and a reference chord/air-viscosity -- NOT the LBM's
+  // own internal lattice Reynolds number, which has no direct physical meaning.
+  const V_ms = flowSpeedMs();
+  const Re = V_ms*CHORD_M/NU_AIR;
+  document.getElementById('spv2B').textContent = V_ms.toFixed(1)+' m/s';
   document.getElementById('rev2B').textContent = Math.round(Re).toLocaleString();
 
   // Separation / stall indicator
@@ -1887,8 +2184,19 @@ function frame(t){
 
   if(!glOK){ drawFallback(); requestAnimationFrame(frame); return; }
 
-  for(let s=0;s<STEPS_PER_FRAME;s++) simStep();
+  const stepsThisFrame=STEPS_PER_FRAME+Math.round(extraSteps);
+  // How many physics steps beyond the norm happened this frame, in "safe
+  // units" of STEPS_PER_FRAME (the rate that's always looked smooth). Used
+  // below to decide how many particle sub-steps to trace through the burst.
+  const nSub=Math.max(1,Math.min(SUBSTEP_CAP,Math.round(stepsThisFrame/STEPS_PER_FRAME)));
+  for(let s=0;s<stepsThisFrame;s++) simStep();
+  extraSteps = extraSteps>0.5 ? extraSteps*BOOST_DECAY : 0;
   renderField(maxS,cpMin,cpMax);
+  // Snapshot the pre-burst field before it's overwritten below, so particle
+  // sub-stepping can interpolate between "start of this frame" and "after all
+  // of this frame's lattice steps" instead of jumping straight to the latter.
+  PrevUfield.set(Ufield);
+  PrevVfield.set(Vfield);
   readMacro();
   updateFieldsFromMacro();
 
@@ -1896,15 +2204,20 @@ function frame(t){
   if(statCounter%3===0) computeForces();
   if(statCounter%10===0) updateStatsUI();
 
-  stepParticles(dt);
+  stepParticles(dt,nSub);
 
   cx2.fillStyle='#0a0d18';
   cx2.fillRect(0,0,W,H);
   cx2.imageSmoothingEnabled=true;
   cx2.imageSmoothingQuality='high';
-  cx2.drawImage(glcv,PX,PY,PW,PH);
+  cx2.save();
+  cx2.beginPath();
+  cx2.rect(PX,PY,PW,PH); // clip so particles simulated outside the zoomed view (they still exist -- the sim domain is wider than what's shown) never bleed into the axis/colorbar margins
+  cx2.clip();
+  cx2.drawImage(glcv,VIEW_SX,VIEW_SY,VIEW_SW,VIEW_SH,PX,PY,PW,PH);
   cx2.drawImage(pcv,0,0);
   drawFoil();
+  cx2.restore();
   drawBar();
   drawLabels();
 
@@ -1937,7 +2250,8 @@ document.getElementById('fd2-shared').addEventListener('change',function(){
 
 document.getElementById('us2-shared').addEventListener('input',function(){
   U0=parseInt(this.value)/1000;
-  document.getElementById('uv2-shared').textContent=U0.toFixed(3);
+  document.getElementById('uv2-shared').textContent=flowSpeedMs().toFixed(1)+' m/s';
+  boostSettling(SPEED_BOOST_STEPS);
 });
 
 document.getElementById('ps2-shared').addEventListener('input',function(){

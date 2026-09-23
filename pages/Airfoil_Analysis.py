@@ -9,6 +9,8 @@ import io
 import base64
 import json
 import streamlit.components.v1 as components
+import sys
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from db_utils import increment_analysis_count
 from aerolab_theme import COLORS, CMAP_GRADIENT, inject_theme, cmap_bar, eyebrow
 
@@ -758,10 +760,10 @@ if 'compare_params' not in st.session_state:
 
 @st.cache_data(ttl=3600, show_spinner=False, max_entries=50)
 def run_xfoil_analysis(file_content: bytes, filename: str, reynolds: float, alpha: float, backend_url: str,
-                        ncrit: float = 9.0, mode: str = "viscous"):
+                        ncrit: float = 9.0, mode: str = "viscous", mach: float = 0.0):
     url = f"{backend_url}/upload_airfoil/"
     files = {"file": (filename, file_content, "text/plain")}
-    data = {"reynolds": reynolds, "alpha": alpha, "ncrit": ncrit, "mode": mode}
+    data = {"reynolds": reynolds, "alpha": alpha, "ncrit": ncrit, "mode": mode, "mach": mach}
     max_retries = 3
     retry_delay = 5
     for attempt in range(max_retries):
@@ -825,6 +827,20 @@ with left_col:
         help="Higher Reynolds = less viscous effects",
         label_visibility="collapsed"
     )
+
+    st.markdown("<br>", unsafe_allow_html=True)
+
+    st.markdown('<p class="param-label">Mach Number</p>', unsafe_allow_html=True)
+    mach = st.slider(
+        "Mach Number",
+        min_value=0.0, max_value=0.75, value=0.0, step=0.05,
+        help="Freestream Mach number. Applies XFOIL's Karman-Tsien compressibility "
+             "correction. Default (0.0) matches incompressible flow, valid for most "
+             "low-speed cases. The correction becomes unreliable above ~0.75 as shock "
+             "effects appear, which this panel-method solver cannot capture.",
+        label_visibility="collapsed"
+    )
+    st.caption(f"Mach: **{mach}**" + ("  (incompressible)" if mach == 0.0 else ""))
 
     st.markdown("<br>", unsafe_allow_html=True)
 
@@ -1038,7 +1054,8 @@ with right_col:
                         alpha=alpha,
                         backend_url=backend_url,
                         ncrit=ncrit,
-                        mode=analysis_mode
+                        mode=analysis_mode,
+                        mach=mach
                     )
                     result_b = run_xfoil_analysis(
                         file_content=uploaded_file_b.getvalue(),
@@ -1047,7 +1064,8 @@ with right_col:
                         alpha=alpha,
                         backend_url=backend_url,
                         ncrit=ncrit,
-                        mode=analysis_mode
+                        mode=analysis_mode,
+                        mach=mach
                     )
 
                 new_count = increment_analysis_count()
@@ -1088,7 +1106,8 @@ with right_col:
                             alpha=float(alpha) if not st.session_state.sweep_mode else 5.0,
                             backend_url=backend_url,
                             ncrit=ncrit,
-                            mode=analysis_mode
+                            mode=analysis_mode,
+                            mach=mach
                         )
                         coeffs = r.get("coefficients", {})
                         cl = coeffs.get("CL", None)
@@ -1162,7 +1181,8 @@ with right_col:
                             alpha=float(a),
                             backend_url=backend_url,
                             ncrit=ncrit,
-                            mode=analysis_mode
+                            mode=analysis_mode,
+                            mach=mach
                         )
                         coeffs = r.get("coefficients", {})
                         cl = coeffs.get("CL", None)
@@ -1206,7 +1226,8 @@ with right_col:
                             alpha=float(a),
                             backend_url=backend_url,
                             ncrit=ncrit,
-                            mode=analysis_mode
+                            mode=analysis_mode,
+                            mach=mach
                         )
                         break
                     except Exception:
@@ -1238,7 +1259,8 @@ with right_col:
                         alpha=alpha,
                         backend_url=backend_url,
                         ncrit=ncrit,
-                        mode=analysis_mode
+                        mode=analysis_mode,
+                        mach=mach
                     )
 
                 new_count = increment_analysis_count()
@@ -1585,7 +1607,8 @@ with right_col:
                 "Live Lattice-Boltzmann (D2Q9) simulation of your airfoil. "
                 "Adjust AOA, flow speed, and trail density with the sliders. "
                 "Use 📷 Save PNG to capture the current view. "
-                "Note: Reynolds number shown is in lattice units — independent of the XFOIL analysis above."
+                "Note: flow speed and Reynolds number shown here use the standard physical definitions "
+                "(Re = Vc/ν) based on the flow-speed slider — independent of the XFOIL analysis above."
             )
             _sweep_name = sp['filename'].replace(".dat", "").replace("_", " ")
             build_lbm_component(
@@ -1831,7 +1854,8 @@ with right_col:
             "Live Lattice-Boltzmann (D2Q9) simulation of your airfoil. "
             "Adjust AOA, flow speed, and trail density with the sliders. "
             "Use 📷 Save PNG to capture the current view. "
-            "Note: Reynolds number shown is in lattice units — independent of the XFOIL analysis above."
+            "Note: flow speed and Reynolds number shown here use the standard physical definitions "
+            "(Re = Vc/ν) based on the flow-speed slider — independent of the XFOIL analysis above."
         )
 
         _airfoil_display_name = (
