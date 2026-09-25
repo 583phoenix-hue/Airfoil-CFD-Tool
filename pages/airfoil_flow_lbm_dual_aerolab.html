@@ -35,40 +35,77 @@
   #fd2-shared { font-size: 12px; padding: 4px 8px; border-radius: 6px; border: 1px solid #2a3050; background: #161b2e; color: #e8ecf0; cursor: pointer; }
   .lbm-dual-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin-top: 10px; }
   .lbm-dual-name { font-size: 12px; color: #a0aab4; margin-bottom: 4px; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; }
+  .lbm-expand-btn { font-size: 12px; padding: 4px 12px; border-radius: 6px; border: 1px solid #2a3050; background: #161b2e; color: #e8ecf0; cursor: pointer; white-space: nowrap; margin-left: 8px; }
+  .lbm-expand-btn:hover { background: #1e2540; }
+
+  #lbm-modal-overlay {
+    display: none;
+    position: fixed; inset: 0;
+    background: rgba(4,6,12,0.94);
+    z-index: 2147483000;
+    overflow-y: auto;
+    padding: 2.5rem 1.25rem;
+  }
+  #lbm-modal-overlay.open { display: block; }
+  #lbm-modal-inner {
+    max-width: 1700px;
+    margin: 0 auto;
+    position: relative;
+  }
+  #lbm-modal-close {
+    position: absolute;
+    top: -2.6rem; right: 0;
+    font-size: 13px;
+    padding: 6px 16px;
+    border-radius: 6px;
+    border: 1px solid #2a3050;
+    background: #161b2e;
+    color: #e8ecf0;
+    cursor: pointer;
+  }
+  #lbm-modal-close:hover { background: #1e2540; }
+  #lbm-modal-slot .lbm-dual-name { font-size: 15px; margin-bottom: 8px; }
+  #lbm-modal-slot #fc2A, #lbm-modal-slot #fc2B { max-width: 100%; }
+  #lbm-modal-slot .lbm-dual-grid { margin-top: 0; }
 
 </style>
 
 <div id="lbm-dual-wrap" style="padding: 0.75rem 0 0.5rem; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #0a0d18;">
-  <div style="font-size: 10px; color: #4a5570; letter-spacing: 0.06em; text-transform: uppercase; margin-bottom: 6px;">D2Q9 lattice-Boltzmann &middot; WebGL2 &middot; shared controls drive both airfoils</div>
-
-  <div class="cr2">
-    <span class="cl2">Angle of attack</span>
-    <input type="range" id="as2-shared" min="-20" max="25" value="6" step="0.5" style="flex:1">
-    <span class="cv2" id="av2-shared">6.0&deg;</span>
+  <div style="display:flex; align-items:center; justify-content:space-between; gap:10px; margin-bottom: 6px;">
+    <div style="font-size: 10px; color: #4a5570; letter-spacing: 0.06em; text-transform: uppercase;">D2Q9 lattice-Boltzmann &middot; WebGL2 &middot; shared controls drive both airfoils</div>
+    <button id="expand-btn-dual" class="lbm-expand-btn" style="margin:0;">&#10530; Enlarge</button>
   </div>
 
-  <div class="cr2">
-    <span class="cl2">Field</span>
-    <select id="fd2-shared">
-      <option value="speed" selected>Velocity</option>
-      <option value="cp">Pressure (Cp)</option>
-      <option value="vort">Vorticity</option>
-    </select>
+  <div id="lbm-controls-shared">
+    <div class="cr2">
+      <span class="cl2">Angle of attack</span>
+      <input type="range" id="as2-shared" min="-20" max="25" value="6" step="0.5" style="flex:1">
+      <span class="cv2" id="av2-shared">6.0&deg;</span>
+    </div>
+
+    <div class="cr2">
+      <span class="cl2">Field</span>
+      <select id="fd2-shared">
+        <option value="speed" selected>Velocity</option>
+        <option value="cp">Pressure (Cp)</option>
+        <option value="vort">Vorticity</option>
+      </select>
+    </div>
+
+    <div class="cr2">
+      <span class="cl2">Flow speed</span>
+      <input type="range" id="us2-shared" min="30" max="100" value="60" step="2" style="flex:1">
+      <span class="cv2" id="uv2-shared">30.0 m/s</span>
+    </div>
+
+    <div class="cr2">
+      <span class="cl2">Trails</span>
+      <input type="range" id="ps2-shared" min="800" max="5000" value="2600" step="100" style="flex:1">
+      <span class="cv2" id="pv2-shared">2600</span>
+    </div>
   </div>
 
-  <div class="cr2">
-    <span class="cl2">Flow speed</span>
-    <input type="range" id="us2-shared" min="30" max="100" value="60" step="2" style="flex:1">
-    <span class="cv2" id="uv2-shared">30.0 m/s</span>
-  </div>
-
-  <div class="cr2">
-    <span class="cl2">Trails</span>
-    <input type="range" id="ps2-shared" min="800" max="5000" value="2600" step="100" style="flex:1">
-    <span class="cv2" id="pv2-shared">2600</span>
-  </div>
-
-  <div class="lbm-dual-grid">
+  <div class="lbm-dual-grid" id="lbm-dual-grid">
     <div id="fw2A">
       <div class="lbm-dual-name">%%USER_NAME_A%%</div>
       <canvas id="fc2A" width="780" height="360"></canvas>
@@ -93,6 +130,14 @@
       </div>
       <button id="png-btnB" style="margin-top:8px;">Save PNG</button>
     </div>
+  </div>
+</div>
+
+<div id="lbm-modal-overlay">
+  <div id="lbm-modal-inner">
+    <button id="lbm-modal-close">&times; Close</button>
+    <div id="lbm-modal-controls-slot"></div>
+    <div id="lbm-modal-slot"></div>
   </div>
 </div>
 
@@ -562,11 +607,6 @@ let U0=0.06;
 // transient instead of crawling through it, while every frame still renders.
 let extraSteps=0;
 const BOOST_STEPS=40, SPEED_BOOST_STEPS=90, BOOST_DECAY=0.975;
-// Caps how many particle-advection sub-steps a single rendered frame traces
-// (see stepParticles below). Each particle still only costs one Path2D +
-// one stroke() call regardless of this number -- it only affects how many
-// points get added to that path, which is cheap.
-const SUBSTEP_CAP=16;
 function boostSettling(n){ extraSteps=Math.max(extraSteps, n===undefined?BOOST_STEPS:n); }
 
 function equilibriumInitData(u0){
@@ -689,13 +729,6 @@ function applyGeometry(shapeKeyArg,aDeg){
 const Ufield=new Float32Array(NX*NY);
 const Vfield=new Float32Array(NX*NY);
 const CpField=new Float32Array(NX*NY);
-// Snapshots of Ufield/Vfield from the start of the current rendered frame
-// (before this frame's burst of lattice steps runs). Used to interpolate the
-// velocity a trail particle sees when several physics steps happen inside a
-// single rendered frame, so its path is sub-stepped smoothly through the
-// burst instead of jumping straight to the post-burst field -- see frame().
-const PrevUfield=new Float32Array(NX*NY);
-const PrevVfield=new Float32Array(NX*NY);
 let maxS=0.6, cpMin=-1, cpMax=1, maxVort=1;
 let statCounter=0;
 
@@ -737,16 +770,9 @@ function sampleScalar(field,wx,wy){
   return w>0?s/w:null;
 }
 
-// frac is where in the current rendered frame's burst of lattice steps this
-// sample falls (0 = the field as it was at the start of the frame, 1 = the
-// field after all of this frame's steps ran). Blending the two lets a
-// particle move through an interpolated velocity across several sub-steps
-// instead of jumping straight from the old field to the fully-updated one.
-function sampleUV(wx,wy,frac){
-  const uOld=sampleScalar(PrevUfield,wx,wy), vOld=sampleScalar(PrevVfield,wx,wy);
-  const uNew=sampleScalar(Ufield,wx,wy), vNew=sampleScalar(Vfield,wx,wy);
-  const u=(uOld!==null&&uNew!==null)?uOld*(1-frac)+uNew*frac:uNew;
-  const v=(vOld!==null&&vNew!==null)?vOld*(1-frac)+vNew*frac:vNew;
+function sampleUV(wx,wy){
+  const u=sampleScalar(Ufield,wx,wy);
+  const v=sampleScalar(Vfield,wx,wy);
   if(u===null||v===null) return null;
   return[u,v];
 }
@@ -881,9 +907,9 @@ function initParts(){
 // sampled velocity back up by the *current* U0 before using it to move a
 // particle, so trail speed genuinely tracks the flow-speed slider.
 const U0_REF = 0.06; // slider's default U0 -- the value kBase below was originally tuned against
-function advect(p,dtFrame,frac){
+function advect(p,dtFrame){
   const kBase=0.00105*dtFrame/U0_REF; // tuned to ~3 lattice cells/frame at freestream *at the reference flow speed*; scales with U0 below
-  const uv1n=sampleUV(p.x,p.y,frac);
+  const uv1n=sampleUV(p.x,p.y);
   if(!uv1n)return null;
   const u1=uv1n[0]*U0, v1=uv1n[1]*U0; // undo the U0 normalization -> real, flow-speed-dependent velocity
   const speed1=Math.hypot(u1,v1);
@@ -891,7 +917,7 @@ function advect(p,dtFrame,frac){
   const maxDisp=0.075; // loosened from 0.05 -- the tighter cap was flattening the fastest near-body streaks to a constant length right where speed differences are most visible
   if(speed1*dtEff>maxDisp)dtEff=maxDisp/Math.max(speed1,1e-6);
   const midx=p.x+u1*dtEff*0.5,midy=p.y+v1*dtEff*0.5;
-  const uv2n=sampleUV(midx,midy,frac)||uv1n;
+  const uv2n=sampleUV(midx,midy)||uv1n;
   const u2=uv2n[0]*U0, v2=uv2n[1]*U0;
   return{nx:p.x+u2*dtEff,ny:p.y+v2*dtEff,speed:Math.hypot(u2,v2)};
 }
@@ -906,46 +932,23 @@ function advect(p,dtFrame,frac){
 const STALL_SPEED2=1e-8;
 const STALL_DRAIN=0.18; // extra life drain per dt tick when stalled
 
-// Fades the previous frame's trails. Always called exactly once per rendered
-// frame regardless of how many particle sub-steps that frame traces.
-function fadeTrails(){
+function stepParticles(dt){
   pctx.globalCompositeOperation='destination-out';
   pctx.fillStyle='rgba(0,0,0,0.055)';
   pctx.fillRect(0,0,W,H);
   pctx.globalCompositeOperation='source-over';
   pctx.lineCap='round';
-}
-
-// nSub sub-steps a particle's advection through this frame, each sampling a
-// blend of the pre- and post-burst velocity field (see sampleUV/advect), so
-// a particle's path is traced smoothly through a settling boost instead of
-// jumping straight to the post-burst position. All of a particle's sub-step
-// segments are accumulated into ONE Path2D and drawn with a single stroke()
-// call -- the cost that matters for frame rate is draw calls, not the extra
-// math, so this keeps draw-call count the same as unboosted (non-substepped)
-// playback no matter how large nSub gets.
-function stepParticles(dt,nSub){
-  fadeTrails();
-  const subDt=dt/nSub;
   for(let i=0;i<parts.length;i++){
     const p=parts[i];
-    const cx1=w2cX(p.x),cy1=w2cY(p.y);
-    let path=null, lastAdv=null, died=false;
-    for(let k=0;k<nSub;k++){
-      const frac=(k+1)/nSub;
-      const adv=advect(p,subDt,frac);
-      if(!adv){ died=true; break; }
-      lastAdv=adv;
-      if(!path){ path=new Path2D(); path.moveTo(cx1,cy1); }
-      path.lineTo(w2cX(adv.nx),w2cY(adv.ny));
-      p.x=adv.nx; p.y=adv.ny;
-    }
-    const stalled = lastAdv!==null && (lastAdv.speed*lastAdv.speed<STALL_SPEED2);
+    const adv=advect(p,dt);
+    const stalled = adv!==null && (adv.speed*adv.speed<STALL_SPEED2);
     // Stalled particles drain faster but stay visible long enough to trace
     // the recirculation bubble before fading out — not instantly killed.
     p.life -= dt * (stalled ? STALL_DRAIN : 0.06);
-    if(died||!lastAdv||p.life<=0){parts[i]=spawn(true,p.lane);continue;}
-    const speed=lastAdv.speed;
+    if(!adv||p.life<=0){parts[i]=spawn(true,p.lane);continue;}
+    const{nx,ny,speed}=adv;
+    const cx1=w2cX(p.x),cy1=w2cY(p.y);
+    const cx2b=w2cX(nx),cy2b=w2cY(ny);
     const t=Math.min((speed/U0)/(maxS*0.92),1); // speed is real (un-normalized); maxS is tracked in U0-normalized units, so divide back down before comparing
     // Trail colour depends on the selected field mode:
     //  - velocity: tinted with the speed colormap (the original look)
@@ -963,7 +966,11 @@ function stepParticles(dt,nSub){
       pctx.strokeStyle=`rgba(${Math.round(r*0.4+255*0.6*lum)},${Math.round(g*0.4+255*0.6*lum)},${Math.round(b*0.4+255*0.6*lum)},0.75)`;
     }
     pctx.lineWidth=1.1;
-    pctx.stroke(path);
+    pctx.beginPath();
+    pctx.moveTo(cx1,cy1);
+    pctx.lineTo(cx2b,cy2b);
+    pctx.stroke();
+    p.x=nx;p.y=ny;
   }
 }
 
@@ -1085,18 +1092,9 @@ function frame(t){
   if(!glOK){ drawFallback(); requestAnimationFrame(frame); return; }
 
   const stepsThisFrame=STEPS_PER_FRAME+Math.round(extraSteps);
-  // How many physics steps beyond the norm happened this frame, in "safe
-  // units" of STEPS_PER_FRAME (the rate that's always looked smooth). Used
-  // below to decide how many particle sub-steps to trace through the burst.
-  const nSub=Math.max(1,Math.min(SUBSTEP_CAP,Math.round(stepsThisFrame/STEPS_PER_FRAME)));
   for(let s=0;s<stepsThisFrame;s++) simStep();
   extraSteps = extraSteps>0.5 ? extraSteps*BOOST_DECAY : 0;
   renderField(maxS,cpMin,cpMax);
-  // Snapshot the pre-burst field before it's overwritten below, so particle
-  // sub-stepping can interpolate between "start of this frame" and "after all
-  // of this frame's lattice steps" instead of jumping straight to the latter.
-  PrevUfield.set(Ufield);
-  PrevVfield.set(Vfield);
   readMacro();
   updateFieldsFromMacro();
 
@@ -1104,7 +1102,7 @@ function frame(t){
   if(statCounter%3===0) computeForces();
   if(statCounter%10===0) updateStatsUI();
 
-  stepParticles(dt,nSub);
+  stepParticles(dt);
 
   cx2.fillStyle='#0a0d18';
   cx2.fillRect(0,0,W,H);
@@ -1662,11 +1660,6 @@ let U0=0.06;
 // transient instead of crawling through it, while every frame still renders.
 let extraSteps=0;
 const BOOST_STEPS=40, SPEED_BOOST_STEPS=90, BOOST_DECAY=0.975;
-// Caps how many particle-advection sub-steps a single rendered frame traces
-// (see stepParticles below). Each particle still only costs one Path2D +
-// one stroke() call regardless of this number -- it only affects how many
-// points get added to that path, which is cheap.
-const SUBSTEP_CAP=16;
 function boostSettling(n){ extraSteps=Math.max(extraSteps, n===undefined?BOOST_STEPS:n); }
 
 function equilibriumInitData(u0){
@@ -1789,13 +1782,6 @@ function applyGeometry(shapeKeyArg,aDeg){
 const Ufield=new Float32Array(NX*NY);
 const Vfield=new Float32Array(NX*NY);
 const CpField=new Float32Array(NX*NY);
-// Snapshots of Ufield/Vfield from the start of the current rendered frame
-// (before this frame's burst of lattice steps runs). Used to interpolate the
-// velocity a trail particle sees when several physics steps happen inside a
-// single rendered frame, so its path is sub-stepped smoothly through the
-// burst instead of jumping straight to the post-burst field -- see frame().
-const PrevUfield=new Float32Array(NX*NY);
-const PrevVfield=new Float32Array(NX*NY);
 let maxS=0.6, cpMin=-1, cpMax=1, maxVort=1;
 let statCounter=0;
 
@@ -1837,16 +1823,9 @@ function sampleScalar(field,wx,wy){
   return w>0?s/w:null;
 }
 
-// frac is where in the current rendered frame's burst of lattice steps this
-// sample falls (0 = the field as it was at the start of the frame, 1 = the
-// field after all of this frame's steps ran). Blending the two lets a
-// particle move through an interpolated velocity across several sub-steps
-// instead of jumping straight from the old field to the fully-updated one.
-function sampleUV(wx,wy,frac){
-  const uOld=sampleScalar(PrevUfield,wx,wy), vOld=sampleScalar(PrevVfield,wx,wy);
-  const uNew=sampleScalar(Ufield,wx,wy), vNew=sampleScalar(Vfield,wx,wy);
-  const u=(uOld!==null&&uNew!==null)?uOld*(1-frac)+uNew*frac:uNew;
-  const v=(vOld!==null&&vNew!==null)?vOld*(1-frac)+vNew*frac:vNew;
+function sampleUV(wx,wy){
+  const u=sampleScalar(Ufield,wx,wy);
+  const v=sampleScalar(Vfield,wx,wy);
   if(u===null||v===null) return null;
   return[u,v];
 }
@@ -1981,9 +1960,9 @@ function initParts(){
 // sampled velocity back up by the *current* U0 before using it to move a
 // particle, so trail speed genuinely tracks the flow-speed slider.
 const U0_REF = 0.06; // slider's default U0 -- the value kBase below was originally tuned against
-function advect(p,dtFrame,frac){
+function advect(p,dtFrame){
   const kBase=0.00105*dtFrame/U0_REF; // tuned to ~3 lattice cells/frame at freestream *at the reference flow speed*; scales with U0 below
-  const uv1n=sampleUV(p.x,p.y,frac);
+  const uv1n=sampleUV(p.x,p.y);
   if(!uv1n)return null;
   const u1=uv1n[0]*U0, v1=uv1n[1]*U0; // undo the U0 normalization -> real, flow-speed-dependent velocity
   const speed1=Math.hypot(u1,v1);
@@ -1991,7 +1970,7 @@ function advect(p,dtFrame,frac){
   const maxDisp=0.075; // loosened from 0.05 -- the tighter cap was flattening the fastest near-body streaks to a constant length right where speed differences are most visible
   if(speed1*dtEff>maxDisp)dtEff=maxDisp/Math.max(speed1,1e-6);
   const midx=p.x+u1*dtEff*0.5,midy=p.y+v1*dtEff*0.5;
-  const uv2n=sampleUV(midx,midy,frac)||uv1n;
+  const uv2n=sampleUV(midx,midy)||uv1n;
   const u2=uv2n[0]*U0, v2=uv2n[1]*U0;
   return{nx:p.x+u2*dtEff,ny:p.y+v2*dtEff,speed:Math.hypot(u2,v2)};
 }
@@ -2006,46 +1985,23 @@ function advect(p,dtFrame,frac){
 const STALL_SPEED2=1e-8;
 const STALL_DRAIN=0.18; // extra life drain per dt tick when stalled
 
-// Fades the previous frame's trails. Always called exactly once per rendered
-// frame regardless of how many particle sub-steps that frame traces.
-function fadeTrails(){
+function stepParticles(dt){
   pctx.globalCompositeOperation='destination-out';
   pctx.fillStyle='rgba(0,0,0,0.055)';
   pctx.fillRect(0,0,W,H);
   pctx.globalCompositeOperation='source-over';
   pctx.lineCap='round';
-}
-
-// nSub sub-steps a particle's advection through this frame, each sampling a
-// blend of the pre- and post-burst velocity field (see sampleUV/advect), so
-// a particle's path is traced smoothly through a settling boost instead of
-// jumping straight to the post-burst position. All of a particle's sub-step
-// segments are accumulated into ONE Path2D and drawn with a single stroke()
-// call -- the cost that matters for frame rate is draw calls, not the extra
-// math, so this keeps draw-call count the same as unboosted (non-substepped)
-// playback no matter how large nSub gets.
-function stepParticles(dt,nSub){
-  fadeTrails();
-  const subDt=dt/nSub;
   for(let i=0;i<parts.length;i++){
     const p=parts[i];
-    const cx1=w2cX(p.x),cy1=w2cY(p.y);
-    let path=null, lastAdv=null, died=false;
-    for(let k=0;k<nSub;k++){
-      const frac=(k+1)/nSub;
-      const adv=advect(p,subDt,frac);
-      if(!adv){ died=true; break; }
-      lastAdv=adv;
-      if(!path){ path=new Path2D(); path.moveTo(cx1,cy1); }
-      path.lineTo(w2cX(adv.nx),w2cY(adv.ny));
-      p.x=adv.nx; p.y=adv.ny;
-    }
-    const stalled = lastAdv!==null && (lastAdv.speed*lastAdv.speed<STALL_SPEED2);
+    const adv=advect(p,dt);
+    const stalled = adv!==null && (adv.speed*adv.speed<STALL_SPEED2);
     // Stalled particles drain faster but stay visible long enough to trace
     // the recirculation bubble before fading out — not instantly killed.
     p.life -= dt * (stalled ? STALL_DRAIN : 0.06);
-    if(died||!lastAdv||p.life<=0){parts[i]=spawn(true,p.lane);continue;}
-    const speed=lastAdv.speed;
+    if(!adv||p.life<=0){parts[i]=spawn(true,p.lane);continue;}
+    const{nx,ny,speed}=adv;
+    const cx1=w2cX(p.x),cy1=w2cY(p.y);
+    const cx2b=w2cX(nx),cy2b=w2cY(ny);
     const t=Math.min((speed/U0)/(maxS*0.92),1); // speed is real (un-normalized); maxS is tracked in U0-normalized units, so divide back down before comparing
     // Trail colour depends on the selected field mode:
     //  - velocity: tinted with the speed colormap (the original look)
@@ -2063,7 +2019,11 @@ function stepParticles(dt,nSub){
       pctx.strokeStyle=`rgba(${Math.round(r*0.4+255*0.6*lum)},${Math.round(g*0.4+255*0.6*lum)},${Math.round(b*0.4+255*0.6*lum)},0.75)`;
     }
     pctx.lineWidth=1.1;
-    pctx.stroke(path);
+    pctx.beginPath();
+    pctx.moveTo(cx1,cy1);
+    pctx.lineTo(cx2b,cy2b);
+    pctx.stroke();
+    p.x=nx;p.y=ny;
   }
 }
 
@@ -2185,18 +2145,9 @@ function frame(t){
   if(!glOK){ drawFallback(); requestAnimationFrame(frame); return; }
 
   const stepsThisFrame=STEPS_PER_FRAME+Math.round(extraSteps);
-  // How many physics steps beyond the norm happened this frame, in "safe
-  // units" of STEPS_PER_FRAME (the rate that's always looked smooth). Used
-  // below to decide how many particle sub-steps to trace through the burst.
-  const nSub=Math.max(1,Math.min(SUBSTEP_CAP,Math.round(stepsThisFrame/STEPS_PER_FRAME)));
   for(let s=0;s<stepsThisFrame;s++) simStep();
   extraSteps = extraSteps>0.5 ? extraSteps*BOOST_DECAY : 0;
   renderField(maxS,cpMin,cpMax);
-  // Snapshot the pre-burst field before it's overwritten below, so particle
-  // sub-stepping can interpolate between "start of this frame" and "after all
-  // of this frame's lattice steps" instead of jumping straight to the latter.
-  PrevUfield.set(Ufield);
-  PrevVfield.set(Vfield);
   readMacro();
   updateFieldsFromMacro();
 
@@ -2204,7 +2155,7 @@ function frame(t){
   if(statCounter%3===0) computeForces();
   if(statCounter%10===0) updateStatsUI();
 
-  stepParticles(dt,nSub);
+  stepParticles(dt);
 
   cx2.fillStyle='#0a0d18';
   cx2.fillRect(0,0,W,H);
@@ -2296,5 +2247,79 @@ document.getElementById('png-btnB').addEventListener('click',function(){
 });
 
 
+})();
+
+// Enlarge modal: reparents the shared controls + one panel (canvas, stats,
+// buttons) into a full-screen overlay, then restores them to their original
+// spot on close. Pure DOM move -- the WebGL contexts stay alive on their
+// canvases the whole time, so the sim doesn't restart or glitch.
+(function(){
+  const overlay=document.getElementById('lbm-modal-overlay');
+  const controlsSlot=document.getElementById('lbm-modal-controls-slot');
+  const gridSlot=document.getElementById('lbm-modal-slot');
+  const controls=document.getElementById('lbm-controls-shared');
+  const grid=document.getElementById('lbm-dual-grid');
+  const controlsHome={parent:controls.parentNode,next:controls.nextSibling};
+  const gridHome={parent:grid.parentNode,next:grid.nextSibling};
+
+  // This page is embedded in Streamlit via components.html() inside an
+  // iframe whose height/width Streamlit fixes from the outside. A plain
+  // `position:fixed` overlay is only "full screen" relative to that iframe's
+  // own tiny box -- it doesn't escape it -- so without this the enlarge
+  // button visibly does nothing. Since components.html renders via
+  // srcdoc, the iframe is same-origin, so we can reach out and resize the
+  // iframe element itself while the modal is open, then put it back.
+  let frameEl=null;
+  try{ frameEl=window.frameElement||null; }catch(e){ frameEl=null; }
+  let frameOrig=null;
+
+  function growFrame(){
+    if(!frameEl) return;
+    frameOrig={
+      position:frameEl.style.position,
+      top:frameEl.style.top,
+      left:frameEl.style.left,
+      width:frameEl.style.width,
+      height:frameEl.style.height,
+      zIndex:frameEl.style.zIndex,
+    };
+    frameEl.style.position='fixed';
+    frameEl.style.top='0';
+    frameEl.style.left='0';
+    frameEl.style.width='100vw';
+    frameEl.style.height='100vh';
+    frameEl.style.zIndex='2147483000';
+  }
+  function restoreFrame(){
+    if(!frameEl||!frameOrig) return;
+    frameEl.style.position=frameOrig.position;
+    frameEl.style.top=frameOrig.top;
+    frameEl.style.left=frameOrig.left;
+    frameEl.style.width=frameOrig.width;
+    frameEl.style.height=frameOrig.height;
+    frameEl.style.zIndex=frameOrig.zIndex;
+    frameOrig=null;
+  }
+
+  function openModal(){
+    controlsSlot.appendChild(controls);
+    gridSlot.appendChild(grid);
+    overlay.classList.add('open');
+    document.body.style.overflow='hidden';
+    growFrame();
+  }
+  function closeModal(){
+    if(!overlay.classList.contains('open')) return;
+    controlsHome.parent.insertBefore(controls,controlsHome.next);
+    gridHome.parent.insertBefore(grid,gridHome.next);
+    overlay.classList.remove('open');
+    document.body.style.overflow='';
+    restoreFrame();
+  }
+
+  document.getElementById('expand-btn-dual').addEventListener('click',openModal);
+  document.getElementById('lbm-modal-close').addEventListener('click',closeModal);
+  overlay.addEventListener('click',function(e){ if(e.target===overlay) closeModal(); });
+  document.addEventListener('keydown',function(e){ if(e.key==='Escape') closeModal(); });
 })();
 </script>
