@@ -16,10 +16,11 @@ files, so many students at once don't use any server memory.
 
 Where the pieces came from:
 
-- `public/lbm/single.html`, `public/lbm/dual.html`: the wind tunnels from
-  `pages/airfoil_flow_lbm_*.html`, unchanged. If you edit those, copy them here too.
+- `public/lbm/single.html`, `public/lbm/dual.html`: the wind tunnel (v2:
+  simulated Re shown, ×U∞ colour bar, particle trails). `single_v1.html` and
+  `dual_v1.html` are the previous version, kept for reverting.
 - `public/cp_editor.html`: `pages/cp_curve_editor_component/index.html`
-  (plus a font link). Same rule.
+  (plus a font link). If you edit that, copy it here too.
 - `src/lib/cpParser.js`: a JavaScript port of `pages/cp_target_parser.py`,
   so Cp files are read in the browser. Same rules and messages; checked
   against the Python version on 18 test files.
@@ -46,20 +47,15 @@ npm run build                  # static files in dist/
 npm run preview                # serve dist/ locally to check the build
 ```
 
-## Deploy on Render (free static site)
+## Deploy on Render
 
-1. Push this folder to its own GitHub repo (or a subfolder of your repo).
-2. Render dashboard → **New → Static Site** → pick the repo.
-   - Build command: `npm ci && npm run build`
-   - Publish directory: `dist`
-   - Environment variables: `VITE_BACKEND_URL=https://aerolab-backend.onrender.com`
-3. **Redirects/Rewrites** tab → add a rule: Source `/*`, Destination
-   `/index.html`, Action **Rewrite**. (Needed so `/about` etc. work when
-   opened directly.) `render.yaml` in this folder sets all of this up if
-   you use **New → Blueprint** instead.
-4. Test it on the `*.onrender.com` URL Render gives you. Once every page
-   works, point the `aerolab.me` domain at this static site and retire
-   `aerolab-app`.
+The site is deployed as a Docker web service (`aerolab-app`) using
+`Dockerfile.frontend` in the repository root: it builds this folder and
+serves `dist/` with nginx, including the rewrite that makes `/about` etc.
+work when opened directly. Push to GitHub and Render redeploys.
+
+`render.yaml` is an alternative for deploying as a Render Static Site
+instead (Root Directory `aerolab-web`).
 
 ## Backend notes
 
@@ -71,6 +67,6 @@ npm run preview                # serve dist/ locally to check the build
   `/analysis_count` were removed in `main.py` for that reason.
 
 - Inverse design and aeroelasticity need `inverse_design.py` and the three
-  aeroelasticity modules next to `main.py` on the backend. Without them those
-  endpoints return 503, and the pages say the feature isn't installed on the
-  server yet; Airfoil Analysis keeps working.
+  aeroelasticity modules next to `main.py` on the backend (all in the repo and
+  copied by `Dockerfile.backend`). Without them those endpoints return 503
+  and the pages say the feature isn't available; Airfoil Analysis keeps working.

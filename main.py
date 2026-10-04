@@ -657,7 +657,9 @@ def _run_xfoil_mode(
             except Exception:
                 pass
 
-    script_lines = []
+    # Graphics off: XFOIL then needs no X display, the same as the inverse
+    # design and aeroelasticity runs.
+    script_lines = ["PLOP", "G", ""]
     script_lines.append(f"LOAD {coords_filename}")
     script_lines.append("PANE")
 

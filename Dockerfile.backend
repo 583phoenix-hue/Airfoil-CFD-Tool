@@ -1,32 +1,40 @@
 # FastAPI backend (main.py) for the React site. Render: Docker service,
 # Dockerfile path = Dockerfile.backend.
+
+# ---- 1. Small fix for Debian's XFOIL build ----
+# Debian compiles XFOIL with floating-point traps on, so it crashes
+# (SIGFPE) on a harmless divide-by-zero when graphics are switched off.
+# This one-function library turns the traps off when preloaded.
+FROM python:3.11-slim AS nofpe
+RUN apt-get update && apt-get install -y --no-install-recommends gcc libc6-dev \
+    && printf 'void _gfortran_set_fpe(int v) { (void)v; }\n' > /nofpe.c \
+    && gcc -shared -fPIC -O2 -o /nofpe.so /nofpe.c
+
+# ---- 2. Backend ----
 FROM python:3.11-slim
 
 WORKDIR /app
 
-# XFOIL (Debian package, v6.99) plus a virtual X server, since XFOIL
-# expects a display even when plotting is switched off.
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    xfoil \
-    xvfb \
-    x11-utils \
+# XFOIL 6.99 from Debian. Every XFOIL run uses PLOP G (graphics off), so no
+# X display / Xvfb is needed.
+RUN apt-get update && apt-get install -y --no-install-recommends xfoil \
     && rm -rf /var/lib/apt/lists/*
 
-ENV XFOIL_PATH=/usr/bin/xfoil \
-    PYTHONUNBUFFERED=1
+COPY --from=nofpe /nofpe.so /usr/local/lib/nofpe.so
+RUN printf '#!/bin/sh\nLD_PRELOAD=/usr/local/lib/nofpe.so exec /usr/bin/xfoil "$@"\n' > /usr/local/bin/xfoil-run \
+    && chmod +x /usr/local/bin/xfoil-run
 
-# Start Xvfb in the background, then the API. Render passes the port in $PORT.
-RUN printf '#!/bin/bash\nXvfb :99 -screen 0 1024x768x24 &\nexport DISPLAY=:99\nsleep 1\nexec uvicorn main:app --host 0.0.0.0 --port "${PORT:-8000}"\n' > /start.sh \
-    && chmod +x /start.sh
+ENV XFOIL_PATH=/usr/local/bin/xfoil-run \
+    PYTHONUNBUFFERED=1
 
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# All Python modules in the repo: main.py, db_utils.py, inverse_design.py,
-# and the aeroelasticity solvers whenever they are committed (without
-# them those endpoints return 503).
+# All Python modules in the repo: main.py, db_utils.py, inverse_design.py
+# and the aeroelasticity solvers.
 COPY *.py ./
 
 EXPOSE 8000
 
-CMD ["/start.sh"]
+# Render passes the port in $PORT.
+CMD ["sh", "-c", "exec uvicorn main:app --host 0.0.0.0 --port ${PORT:-8000}"]
