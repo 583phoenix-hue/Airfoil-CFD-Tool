@@ -10,10 +10,6 @@ venv/
 xfoil.exe
 !pages/example_airfoils/*.dat
 
-# Aeroelasticity solvers kept private (backend returns 503 without them)
-static_divergence.py
-control_reversal.py
-flutter_vg.py
 
 # Temporary XFOIL run folders
 aero_div_*/

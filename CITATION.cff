@@ -9,7 +9,7 @@ authors:
 repository-code: https://github.com/583phoenix-hue/Airfoil-CFD-Tool
 url: https://aerolab-app.onrender.com/
 license: AGPL-3.0
-version: v1.1.0
+version: v2.0.0
 doi: 10.5281/zenodo.21231849
-date-released: 2026-07-07
+date-released: 2026-10-04
 abstract: "A free, browser-based aerodynamic analysis tool wrapping the XFOIL panel method solver, featuring a robust airfoil coordinate file parser with automatic Lednicer-to-Selig format conversion, and an interactive GPU-accelerated D2Q9 Lattice-Boltzmann wind tunnel for real-time flow visualisation."
