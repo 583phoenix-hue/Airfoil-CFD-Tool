@@ -891,7 +891,7 @@ async def health(request: Request):
 
 
 @app.get("/analysis_count")
-async def analysis_count(request: Request):
+def analysis_count(request: Request):
     """
     Exposes the analysis counter over HTTP for frontends without direct DB
     access (e.g. a JS frontend). Requires db_utils.py to be importable from
@@ -982,11 +982,7 @@ async def upload_airfoil(
                 "transition_lower_x": bl_data["transition_lower_x"],
             }
 
-        try:
-            from db_utils import increment_analysis_count
-            increment_analysis_count()
-        except Exception as e:
-            logger.info(f"increment_analysis_count unavailable: {e}")
+        await to_thread.run_sync(_count_analysis)
 
         return {
             "success":       True,
@@ -1100,6 +1096,11 @@ def _count_analysis():
         logger.info(f"increment_analysis_count unavailable: {e}")
 
 
+async def _count_analysis_async():
+    # The database call blocks, so keep it off the event loop.
+    await to_thread.run_sync(_count_analysis)
+
+
 @app.post("/aeroelasticity/divergence")
 async def aeroelasticity_divergence(
     request: Request,
@@ -1133,7 +1134,7 @@ async def aeroelasticity_divergence(
                 v_start, v_step, v_max,
             )
         result["success"] = True
-        _count_analysis()
+        await _count_analysis_async()
         return _json_safe(result)
     except HTTPException:
         raise
@@ -1184,7 +1185,7 @@ async def aeroelasticity_reversal(
                 )
             )
         result["success"] = True
-        _count_analysis()
+        await _count_analysis_async()
         return _json_safe(result)
     except HTTPException:
         raise
@@ -1240,7 +1241,7 @@ async def aeroelasticity_flutter(
             result = await to_thread.run_sync(call)
         result.pop("history", None)  # legacy tuple form; "modes" carries it all
         result["success"] = True
-        _count_analysis()
+        await _count_analysis_async()
         return _json_safe(result)
     except HTTPException:
         raise
@@ -1328,6 +1329,101 @@ def _set_inverse_progress(job_id, fraction, message):
         INVERSE_PROGRESS.pop(k, None)
 
 
+# Jobs the browser asked to stop (left the page, closed the tab, Cancel).
+INVERSE_CANCELLED = {}
+
+
+class InverseCancelled(Exception):
+    pass
+
+
+def _cancel_inverse(job_id):
+    now = time.time()
+    INVERSE_CANCELLED[job_id] = now
+    for k in [k for k, t in INVERSE_CANCELLED.items() if now - t > 600]:
+        INVERSE_CANCELLED.pop(k, None)
+
+
+def _mp_context():
+    """Process start method for inverse designs. Linux: a fork server that
+    has inverse_design (numpy/scipy) preloaded, so each design starts fast and
+    safely; Windows only has spawn."""
+    import multiprocessing as mp
+    if platform.system() == "Windows":
+        return mp.get_context("spawn")
+    ctx = mp.get_context("forkserver")
+    ctx.set_forkserver_preload(["inverse_design"])
+    return ctx
+
+
+def _kill_job_process(p):
+    import signal as _signal
+    try:
+        if hasattr(os, "killpg"):
+            os.killpg(p.pid, _signal.SIGKILL)   # the job and any XFOIL it started
+            return
+    except Exception:
+        pass
+    try:
+        p.kill()
+    except Exception:
+        pass
+
+
+def _run_inverse_process(job_key, track, args, kwargs):
+    """Run inv_design.run_inverse_design in a separate, lower-priority
+    process (see run_inverse_design_job). Relays progress, and kills the
+    process if the job is cancelled."""
+    import queue as _queue
+    ctx = _mp_context()
+    q = ctx.Queue()
+    p = ctx.Process(target=inv_design.run_inverse_design_job, args=(q, args, kwargs), daemon=True)
+    p.start()
+    finished = False
+    try:
+        while True:
+            if job_key in INVERSE_CANCELLED:
+                raise InverseCancelled()
+            try:
+                msg = q.get(timeout=0.5)
+            except _queue.Empty:
+                if p.is_alive():
+                    continue
+                try:
+                    msg = q.get(timeout=1.0)
+                except _queue.Empty:
+                    raise RuntimeError(f"The design process stopped unexpectedly (exit code {p.exitcode}).")
+            kind = msg[0]
+            if kind == "progress":
+                if track:
+                    _set_inverse_progress(job_key, msg[1], msg[2])
+                continue
+            finished = True
+            if kind == "done":
+                return msg[1]
+            if kind == "value_error":
+                raise ValueError(msg[1])
+            raise RuntimeError(msg[1])
+    finally:
+        if finished:
+            p.join(timeout=5)
+        if p.is_alive():
+            _kill_job_process(p)
+            p.join(timeout=5)
+        q.close()
+        q.cancel_join_thread()
+
+
+@app.post("/inverse_design/cancel/{job_id}")
+async def inverse_design_cancel(job_id: str):
+    """Stop a running inverse design (the page calls this when you leave it,
+    close the tab or press Cancel)."""
+    if not _JOB_ID_RE.match(job_id):
+        raise HTTPException(status_code=400, detail="Invalid job id")
+    _cancel_inverse(job_id)
+    return {"cancelled": True}
+
+
 @app.get("/inverse_design/progress/{job_id}")
 async def inverse_design_progress(job_id: str):
     """Progress of a running inverse design (fraction 0..1 and the current
@@ -1364,6 +1460,7 @@ async def inverse_design_endpoint(
         raise HTTPException(status_code=400, detail=f"Invalid target curve: {e}")
 
     track = bool(job_id) and bool(_JOB_ID_RE.match(job_id))
+    job_key = job_id if track else f"internal-{uuid.uuid4().hex}"
     if track:
         _set_inverse_progress(job_id, 0.0, "Waiting for the solver")
     work_dir = os.path.join(TMP_DIR, f"inverse_{str(uuid.uuid4())[:8]}")
@@ -1372,22 +1469,34 @@ async def inverse_design_endpoint(
                 f"min_t={min_thickness_percent}% seed={'upload' if file is not None and file.filename else 'NACA 0012'}")
     try:
         seed = await _read_seed(file, work_dir)
-        async with xfoil_semaphore:
-            result = await to_thread.run_sync(
-                lambda: inv_design.run_inverse_design(
-                    work_dir, reynolds, alpha, tu, tl, seed_coords=seed, ncrit=ncrit,
-                    min_thickness=min_thickness_percent / 100.0,
-                    progress=(lambda f, m: _set_inverse_progress(job_id, f, m)) if track else None,
-                ))
+        async def _watch_disconnect():
+            # Browser gone (tab closed, network lost) -> stop the job too.
+            while True:
+                await asyncio.sleep(2)
+                if await request.is_disconnected():
+                    _cancel_inverse(job_key)
+                    return
+
+        watcher = asyncio.create_task(_watch_disconnect())
         try:
-            from db_utils import increment_analysis_count
-            increment_analysis_count()
-        except Exception as e:
-            logger.info(f"increment_analysis_count unavailable: {e}")
+            async with xfoil_semaphore:
+                if job_key in INVERSE_CANCELLED:
+                    raise InverseCancelled()
+                result = await to_thread.run_sync(
+                    _run_inverse_process, job_key, track,
+                    (work_dir, reynolds, alpha, tu, tl),
+                    dict(seed_coords=seed, ncrit=ncrit, min_thickness=min_thickness_percent / 100.0),
+                )
+        finally:
+            watcher.cancel()
+        await _count_analysis_async()
         result["success"] = True
         return _json_safe(result)
     except HTTPException:
         raise
+    except InverseCancelled:
+        logger.info(f"inverse_design: job {job_key} cancelled")
+        raise HTTPException(status_code=409, detail="Design cancelled.")
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:

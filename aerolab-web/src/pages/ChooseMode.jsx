@@ -6,7 +6,7 @@ import { COLORS } from "../config.js";
 const MODES = [
   { icon: "📐", accent: COLORS.c2, title: "Analyze Airfoil", to: "/analysis", cta: "Analyze an airfoil →",
     desc: "Upload a coordinate file or pick a bundled example. Get lift, drag, moment coefficients, and pressure distribution from XFOIL." },
-  { icon: "✏️", accent: COLORS.c5, title: "Inverse Design", to: "/inverse-design", cta: "Design an airfoil →",
+  { icon: "✏️", accent: COLORS.c5, title: "Inverse Design", to: "/inverse-design", cta: "Design an airfoil →", soon: true,
     desc: "Draw the pressure distribution you want. AeroLab generates an airfoil shape to match it, then verifies the result with a real analysis." },
   { icon: "〰️", accent: COLORS.c6, title: "Aeroelasticity", to: "/aeroelasticity", cta: "Explore aeroelasticity →",
     desc: "Check how a flexible wing responds to airspeed: torsional divergence, control reversal, and flutter, computed from real airfoil data." },
@@ -30,13 +30,15 @@ export default function ChooseMode() {
 
       <div className="grid grid-3" style={{ maxWidth: 1100, margin: "0 auto" }}>
         {MODES.map((m) => (
-          <div key={m.title} className="stack" style={{ gap: 16 }}>
+          <div key={m.title} className="stack" style={{ gap: 16, opacity: m.soon ? 0.6 : 1 }}>
             <div className="card center" style={{ padding: "36px 28px", flex: 1 }}>
               <div className="mode-icon" style={{ background: `${m.accent}20`, color: m.accent }}>{m.icon}</div>
               <div style={{ fontFamily: "var(--font-head)", fontSize: 20, fontWeight: 600, color: "var(--text)", marginBottom: 10 }}>{m.title}</div>
               <p style={{ fontSize: 14, lineHeight: 1.6 }}>{m.desc}</p>
             </div>
-            <Link className="btn btn-block" to={m.to}>{m.cta}</Link>
+            {m.soon
+              ? <span className="btn btn-block" aria-disabled="true">Coming soon</span>
+              : <Link className="btn btn-block" to={m.to}>{m.cta}</Link>}
           </div>
         ))}
       </div>

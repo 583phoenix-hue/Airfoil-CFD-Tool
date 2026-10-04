@@ -188,6 +188,22 @@ export default function InverseDesign() {
   const [result, setResult] = useState(null);
   const [resultKey, setResultKey] = useState(null);
 
+  // The design that's running, so it can be stopped: leaving the page,
+  // closing the tab or pressing Cancel tells the server to stop it (it would
+  // otherwise keep running and slow every other request down).
+  const activeJob = useRef(null); // { jobId, ctrl }
+  const cancelJob = () => {
+    const job = activeJob.current;
+    if (!job) return;
+    activeJob.current = null;
+    try { navigator.sendBeacon(`${BACKEND_URL}/inverse_design/cancel/${job.jobId}`); } catch { /* ignore */ }
+    job.ctrl.abort();
+  };
+  useEffect(() => {
+    window.addEventListener("pagehide", cancelJob);
+    return () => { window.removeEventListener("pagehide", cancelJob); cancelJob(); };
+  }, []);
+
   const seedHash = seed ? hash(seed.content) : "";
   const settingsKey = `${reynolds}|${alpha}|${ncrit}|${seed?.name || ""}|${seedHash}|${minThickness}`;
 
@@ -273,6 +289,8 @@ export default function InverseDesign() {
     // design runs. If the server is too old to report progress, fall back to
     // the time-based bar.
     const jobId = (crypto.randomUUID ? crypto.randomUUID() : String(Math.random()).slice(2) + Date.now()).replace(/[^A-Za-z0-9]/g, "");
+    const ctrl = new AbortController();
+    activeJob.current = { jobId, ctrl };
     let polling = true;
     const poll = async () => {
       while (polling) {
@@ -296,13 +314,15 @@ export default function InverseDesign() {
         reynolds, alpha, ncrit, min_thickness_percent: minThickness,
         target_cp_upper: JSON.stringify(targetUpper), target_cp_lower: JSON.stringify(targetLower),
         job_id: jobId,
-      }, { file: seed ? { name: seed.name, content: seed.content } : null, timeoutMs: 280000, retries: 0 });
+      }, { file: seed ? { name: seed.name, content: seed.content } : null, timeoutMs: 280000, retries: 0,
+        signal: ctrl.signal });
       setResult(r);
       setResultKey(settingsKey);
     } catch (e) {
-      setError(`❌ ${e.message}`);
-      setResult(null);
+      setError(ctrl.signal.aborted ? "⏹️ Design cancelled." : `❌ ${e.message}`);
+      if (!ctrl.signal.aborted) setResult(null);
     } finally {
+      if (activeJob.current?.jobId === jobId) activeJob.current = null;
       polling = false;
       setRunning(false);
       setProgress(undefined);
@@ -421,6 +441,9 @@ export default function InverseDesign() {
                   <ElapsedSeconds />
                 </Progress>
               )
+            )}
+            {running && (
+              <button className="btn btn-secondary btn-sm" onClick={cancelJob}>⏹️ Cancel</button>
             )}
             {error && <Alert kind="error">{error}</Alert>}
           </div>

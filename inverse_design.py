@@ -607,3 +607,29 @@ def seed_baseline(work_dir, reynolds, alpha, seed_coords=None, ncrit=9.0):
     return {"x": xe.round(4).tolist(), "upper": np.round(cu, 4).tolist(),
             "lower": np.round(cl_, 4).tolist(), "source": source, "CL": cl,
             "seed_coords": c.tolist()}
+
+
+def run_inverse_design_job(queue, args, kwargs):
+    """Entry point when main.py runs a design in a separate process.
+
+    Running it in its own process (at lower CPU priority) means a design
+    can't starve the web server of CPU, and a cancelled design can simply be
+    killed. Progress, the result or the error go back through `queue` as
+    ("progress", fraction, message), ("done", result), ("value_error", text)
+    or ("error", text).
+    """
+    try:
+        if hasattr(os, "setpgrp"):
+            os.setpgrp()    # own process group, so the XFOIL runs it starts die with it
+        if hasattr(os, "nice"):
+            os.nice(10)     # lower priority than the web server and normal analyses
+    except Exception:
+        pass
+    try:
+        result = run_inverse_design(*args, **kwargs,
+                                    progress=lambda f, m: queue.put(("progress", f, m)))
+        queue.put(("done", result))
+    except ValueError as e:
+        queue.put(("value_error", str(e)))
+    except Exception as e:
+        queue.put(("error", str(e) or type(e).__name__))

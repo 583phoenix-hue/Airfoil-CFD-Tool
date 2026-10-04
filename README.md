@@ -4,7 +4,7 @@
 [![License: AGPL v3](https://img.shields.io/badge/License-AGPL_v3-blue.svg)](LICENSE)
 [![DOI](https://zenodo.org/badge/doi/10.5281/zenodo.20740325.svg)](https://doi.org/10.5281/zenodo.20740325)
 
-AeroLab is a free, browser-based aerodynamics toolkit built on the industry-standard [XFOIL](https://web.mit.edu/drela/Public/web/xfoil/) panel method solver. Students, researchers and aerospace enthusiasts can analyse 2D airfoil sections, design airfoils from a target pressure distribution, and estimate aeroelastic limits (divergence, control reversal, flutter), all without installing any software.
+AeroLab is a free, browser-based aerodynamics toolkit built on the industry-standard [XFOIL](https://web.mit.edu/drela/Public/web/xfoil/) panel method solver. Students, researchers and aerospace enthusiasts can analyse 2D airfoil sections and estimate aeroelastic limits (divergence, control reversal, flutter), all without installing any software.
 
 **Live tool:** https://aerolab-app.onrender.com/
 
@@ -27,7 +27,9 @@ AeroLab is a free, browser-based aerodynamics toolkit built on the industry-stan
 - Live angle-of-attack and Reynolds-number control, showing the Reynolds number actually simulated
 - Smoke and particle-trail visualisation, stall indicator, PNG export, and a side-by-side tunnel in compare mode
 
-### Inverse Design
+### Inverse Design (coming soon)
+Temporarily unavailable on the live site while it is moved to run in the browser.
+
 - Design an airfoil that produces a target pressure distribution (Cp), using SU2-style Cp matching driven by XFOIL
 - Draw the target in an interactive Cp curve editor, or upload a Cp file
 - Start from a seed airfoil (NACA 0012 by default, or your own) with a minimum-thickness constraint
@@ -132,7 +134,7 @@ Tests cover the `.dat` file parser (Selig/Lednicer detection, winding order corr
 ## Usage
 
 1. Visit the [live tool](https://aerolab-app.onrender.com/) or run it locally
-2. Choose a module: **Airfoil Analysis**, **Inverse Design** or **Aeroelasticity**
+2. Choose a module: **Airfoil Analysis** or **Aeroelasticity** (Inverse Design is coming soon)
 3. Pick a built-in example airfoil, or upload a `.dat` file from a database such as the [UIUC Airfoil Coordinate Database](https://m-selig.ae.illinois.edu/ads/coord_database.html) or [Airfoil Tools](http://airfoiltools.com/). The parser fixes malformed files automatically
 4. Set the flow conditions (Reynolds number, angle of attack or sweep range, and so on)
 5. Run the analysis, view the charts, and download the results
