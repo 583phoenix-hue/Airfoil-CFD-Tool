@@ -9,3 +9,19 @@ fix.dat
 venv/
 xfoil.exe
 !pages/example_airfoils/*.dat
+
+# Aeroelasticity solvers kept private (backend returns 503 without them)
+static_divergence.py
+control_reversal.py
+flutter_vg.py
+
+# Temporary XFOIL run folders
+aero_div_*/
+aero_flt_*/
+estimate_*/
+
+# Windows / OneDrive folder settings
+desktop.ini
+
+# Example airfoils served by the React site
+!aerolab-web/public/examples/*.dat

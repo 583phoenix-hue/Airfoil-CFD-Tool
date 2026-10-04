@@ -1,0 +1,815 @@
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background: #0a0d18; }
+  #fw2 { padding: 0.75rem 0 0.5rem; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #0a0d18; }
+  #fc2 { display: block; width: 100%; border-radius: 8px; }
+  .cr2 { display: flex; align-items: center; gap: 10px; margin: 0.6rem 0 0.1rem; }
+  .cl2 { font-size: 12px; color: #a0aab4; min-width: 90px; }
+  .cv2 { font-size: 12px; font-weight: 600; color: #e8ecf0; min-width: 42px; text-align: right; font-variant-numeric: tabular-nums; }
+  .sr2 { display: flex; gap: 10px; margin-top: 0.6rem; flex-wrap: wrap; }
+  .st2 { background: #161b2e; border: 1px solid #2a3050; border-radius: 6px; padding: 5px 14px; }
+  .sl2 { font-size: 10px; color: #6b7a99; }
+  .sv2 { font-size: 15px; font-weight: 600; color: #e8ecf0; font-variant-numeric: tabular-nums; }
+  #fd2 { font-size: 12px; padding: 4px 8px; border-radius: 6px; border: 1px solid #2a3050; background: #161b2e; color: #e8ecf0; cursor: pointer; }
+  #eng2 { font-size: 10px; color: #4a5570; letter-spacing: 0.06em; text-transform: uppercase; margin-top: 4px; }
+  #png-btn { font-size: 12px; padding: 4px 12px; border-radius: 6px; border: 1px solid #2a3050; background: #161b2e; color: #e8ecf0; cursor: pointer; white-space: nowrap; }
+  #png-btn:hover { background: #1e2540; }
+  .ck2 { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: #a0aab4; cursor: pointer; }
+  .ck2 input { accent-color: #667eea; }
+  .hint2 { font-size: 11px; color: #4a5570; }
+  input[type=range] { accent-color: #667eea; }
+</style>
+
+<div id="fw2">
+  <canvas id="fc2" width="780" height="360"></canvas>
+  <div id="eng2">D2Q9 lattice-Boltzmann &middot; 640&times;320 &middot; Smagorinsky LES &middot; WebGL2</div>
+
+  <div class="cr2">
+    <span class="cl2">Angle of attack</span>
+    <input type="range" id="as2" min="-20" max="25" value="6" step="0.5" style="flex:1">
+    <span class="cv2" id="av2">6.0&deg;</span>
+  </div>
+
+  <div class="cr2">
+    <span class="cl2">Field</span>
+    <select id="fd2">
+      <option value="speed" selected>Velocity</option>
+      <option value="cp">Pressure (Cp)</option>
+      <option value="vort">Vorticity</option>
+      <option value="smoke">Smoke</option>
+    </select>
+    <label class="ck2" title="Tracer lines that follow the air, showing its direction (hidden in Smoke view).">
+      <input type="checkbox" id="tr2" checked> Show trails
+    </label>
+  </div>
+
+  <div class="cr2">
+    <span class="cl2" title="The simulation's own Reynolds number (based on chord). Higher = less viscous, more vigorous shedding.">Reynolds number</span>
+    <input type="range" id="us2" min="30" max="100" value="60" step="2" style="flex:1">
+    <span class="cv2" id="uv2" style="min-width:52px">2,560</span>
+    <button id="png-btn" style="margin-left:8px;">Save PNG</button>
+  </div>
+
+  <div class="sr2">
+    <div class="st2"><div class="sl2">CL (approx)</div><div class="sv2" id="clv2">&mdash;</div></div>
+    <div class="st2"><div class="sl2">CD (approx)</div><div class="sv2" id="cdv2">&mdash;</div></div>
+    <div class="st2" title="The Reynolds number this simulation actually runs at (U&middot;c/&nu; on the lattice)."><div class="sl2">Reynolds (simulated)</div><div class="sv2" id="rev2">&mdash;</div></div>
+    <div class="st2" id="sep-card"><div class="sl2">Separation</div><div class="sv2" id="sepv2">&mdash;</div></div>
+  </div>
+</div>
+
+<script>
+(function(){
+// ── Injected geometry (replaced before rendering) ──
+const USER_COORDS = %%USER_COORDS%%;   // list of [x,y] pairs, or [] for fallback
+const USER_NAME   = %%USER_NAME%%;     // display name string
+
+// ═══════════════════════════════════════════════════════════════════════
+// AeroLab wind tunnel v2 — shared engine (inlined into single + dual pages)
+//
+// What changed from v1:
+//  • 640×320 lattice with SQUARE cells (v1's 320×160 over a 2.6×1.5-chord
+//    domain had cells 15% taller than wide, which stretched the airfoil).
+//  • Lower base viscosity + Smagorinsky subgrid model (LES): the effective
+//    relaxation time rises only where the flow is strongly sheared, so the
+//    run stays stable while the wake is free to roll up into eddies.
+//  • Sponge layer before the outlet so vortices leave quietly instead of
+//    reflecting back into the domain.
+//  • Everything visual runs on the GPU: colour field, smoke (dye) transport,
+//    trail particles and their fading trails. The CPU only reads the field
+//    back every few frames for CL/CD, separation and colour-scale ranges.
+//  • Steps per frame are tuned automatically to the machine (see driver),
+//    so the flow moves as fast as the GPU allows.
+//  • Everything is reported in the simulation's own terms: its real
+//    Reynolds number (U·c/ν on the lattice, ~1,300–4,300) and speeds as
+//    multiples of the freestream. v1 showed m/s and Re for a 1 m wing,
+//    which the simulation never actually modelled.
+// ═══════════════════════════════════════════════════════════════════════
+
+const LBM = {
+  NX: 640, NY: 320,
+  DX0: -0.8, DX1: 2.2, DY0: -0.75, DY1: 0.75,   // 3.0 × 1.5 chords → square cells
+  VX0: -0.42, VX1: 1.42, VY0: -0.46, VY1: 0.46, // display window (render-time crop only)
+  TAU0: 0.515,          // base BGK relaxation time (v1: 0.58) → ~5× lower viscosity
+  CS: 0.16,             // Smagorinsky constant
+  SPONGE_START: 0.80,   // fraction of NX where the outlet sponge begins
+  SPONGE_TAU: 0.85,
+  PT: 72,               // particle texture side (72² = 5184 ≥ 5000 max trails)
+  TRAIL_W: 1280, TRAIL_H: 640,
+  VORT_C: 7.4,          // vorticity colour full-scale, in units of U/c
+  TRAILS: 2000,         // particles drawn when "Show trails" is on
+};
+LBM.CHORD_L = LBM.NX / (LBM.DX1 - LBM.DX0); // lattice cells per chord (213)
+LBM.NU = (LBM.TAU0 - 0.5) / 3;              // lattice viscosity
+
+// The simulation's actual Reynolds number for a lattice inlet speed U0.
+// (Base viscosity; the Smagorinsky model adds a little more only in
+// strongly sheared regions.)
+function lbmSimRe(U0) { return U0 * LBM.CHORD_L / LBM.NU; }
+
+// ── geometry helpers (same as v1) ──────────────────────────────────────
+function lbmNaca4(m, p, t, n) {
+  m /= 100; p /= 10; t /= 100;
+  const up = [], lo = [];
+  for (let i = 0; i <= n; i++) {
+    const b = Math.PI * i / n, x = 0.5 * (1 - Math.cos(b));
+    const yt = 5 * t * (0.2969 * Math.sqrt(x) - 0.126 * x - 0.3516 * x * x + 0.2843 * x ** 3 - 0.1036 * x ** 4);
+    let yc = 0, dyc = 0;
+    if (m > 0) {
+      if (x < p) { yc = m / p / p * (2 * p * x - x * x); dyc = 2 * m / p / p * (p - x); }
+      else { yc = m / (1 - p) ** 2 * ((1 - 2 * p) + 2 * p * x - x * x); dyc = 2 * m / (1 - p) ** 2 * (p - x); }
+    }
+    const th = Math.atan(dyc);
+    up.push([x - yt * Math.sin(th), yc + yt * Math.cos(th)]);
+    lo.push([x + yt * Math.sin(th), yc - yt * Math.cos(th)]);
+  }
+  up.reverse();
+  return up.concat(lo.slice(1));
+}
+
+const LBM_NP = 200;
+function lbmRotate(coords, aDeg) {
+  const a = -aDeg * Math.PI / 180, ca = Math.cos(a), sa = Math.sin(a);
+  return coords.map(([x, y]) => { const dx = x - 0.25, dy = y; return [0.25 + dx * ca - dy * sa, dx * sa + dy * ca]; });
+}
+function lbmPanelise(coords) {
+  const xs = coords.map(p => p[0]), ys = coords.map(p => p[1]);
+  const arc = [0];
+  for (let i = 1; i < coords.length; i++) arc.push(arc[i - 1] + Math.hypot(xs[i] - xs[i - 1], ys[i] - ys[i - 1]));
+  const L = arc[arc.length - 1];
+  const xp = [], yp = [];
+  for (let i = 0; i <= LBM_NP; i++) {
+    const s = L * 0.5 * (1 - Math.cos(Math.PI * i / LBM_NP));
+    let j = 0; while (j < arc.length - 2 && arc[j + 1] < s) j++;
+    const t = (s - arc[j]) / (arc[j + 1] - arc[j] + 1e-12);
+    xp.push(xs[j] + (xs[j + 1] - xs[j]) * t);
+    yp.push(ys[j] + (ys[j + 1] - ys[j]) * t);
+  }
+  return { xp, yp };
+}
+function lbmRasterMask(xp, yp) {
+  const { NX, NY, DX0, DX1, DY0, DY1 } = LBM;
+  const mask = new Uint8Array(NX * NY);
+  const n = xp.length;
+  for (let iy = 0; iy < NY; iy++) {
+    const wy = DY0 + (iy + 0.5) / NY * (DY1 - DY0);
+    const xs = [];
+    for (let i = 0; i < n - 1; i++) {
+      const y1 = yp[i], y2 = yp[i + 1];
+      if ((y1 > wy) !== (y2 > wy)) xs.push(xp[i] + (xp[i + 1] - xp[i]) * (wy - y1) / (y2 - y1));
+    }
+    xs.sort((a, b) => a - b);
+    for (let k = 0; k + 1 < xs.length; k += 2) {
+      let ix0 = Math.ceil((xs[k] - DX0) / (DX1 - DX0) * NX - 0.5);
+      let ix1 = Math.floor((xs[k + 1] - DX0) / (DX1 - DX0) * NX - 0.5);
+      ix0 = Math.max(0, ix0); ix1 = Math.min(NX - 1, ix1);
+      for (let ix = ix0; ix <= ix1; ix++) mask[iy * NX + ix] = 255;
+    }
+  }
+  return mask;
+}
+
+// ── colour maps for the 2D colour bar (match the shaders) ──────────────
+function lbmLerp(t, S) {
+  t = Math.max(0, Math.min(1, t));
+  const f = t * (S.length - 1), i = Math.min(Math.floor(f), S.length - 2), u = f - i;
+  return [0, 1, 2].map(k => S[i][k] * (1 - u) + S[i + 1][k] * u);
+}
+const LBM_SPEED = [[0,0,40],[0,0,180],[0,80,255],[0,180,255],[0,255,255],[0,255,140],[60,255,0],[255,255,0],[255,140,0],[255,0,0]];
+const LBM_CP = [[20,50,160],[40,110,210],[100,175,235],[190,220,245],[248,248,248],[248,214,140],[240,150,60],[205,50,25]];
+
+// ── GLSL ────────────────────────────────────────────────────────────────
+const LBM_GLSL_CONST = () => `
+const int NX=${LBM.NX}; const int NY=${LBM.NY};
+const float DX0=${LBM.DX0.toFixed(4)}; const float DXW=${(LBM.DX1 - LBM.DX0).toFixed(4)};
+const float DY0=${LBM.DY0.toFixed(4)}; const float DYH=${(LBM.DY1 - LBM.DY0).toFixed(4)};
+const float CELL=${((LBM.DX1 - LBM.DX0) / LBM.NX).toFixed(8)};
+`;
+
+const LBM_VS = `#version 300 es
+const vec2 P[3]=vec2[3](vec2(-1.0,-1.0),vec2(3.0,-1.0),vec2(-1.0,3.0));
+out vec2 vUV;
+void main(){ vec2 p=P[gl_VertexID]; vUV=(p+1.0)*0.5; gl_Position=vec4(p,0.0,1.0); }`;
+
+const LBM_STEP_FS = () => `#version 300 es
+precision highp float; precision highp int;
+${LBM_GLSL_CONST()}
+uniform sampler2D texA, texB, texC, texMask;
+uniform float tau0, cs, U0, spongeStart, spongeTau;
+layout(location=0) out vec4 outA;
+layout(location=1) out vec4 outB;
+layout(location=2) out vec4 outC;
+
+const ivec2 E[9]=ivec2[9](ivec2(0,0),ivec2(1,0),ivec2(0,1),ivec2(-1,0),ivec2(0,-1),ivec2(1,1),ivec2(-1,1),ivec2(-1,-1),ivec2(1,-1));
+const int OPP[9]=int[9](0,3,4,1,2,7,8,5,6);
+const float W[9]=float[9](4.0/9.0,1.0/9.0,1.0/9.0,1.0/9.0,1.0/9.0,1.0/36.0,1.0/36.0,1.0/36.0,1.0/36.0);
+
+float fAt(int i, ivec2 q){
+  if(i<4) return texelFetch(texA,q,0)[i];
+  if(i<8) return texelFetch(texB,q,0)[i-4];
+  return texelFetch(texC,q,0).r;
+}
+float feq(int i, float rho, vec2 u){
+  float eu=dot(vec2(E[i]),u);
+  return W[i]*rho*(1.0+3.0*eu+4.5*eu*eu-1.5*dot(u,u));
+}
+bool solidAt(ivec2 q){ return texelFetch(texMask,clamp(q,ivec2(0),ivec2(NX-1,NY-1)),0).r>0.5; }
+
+void main(){
+  ivec2 p=ivec2(gl_FragCoord.xy);
+  if(solidAt(p)){
+    // bounce-back inside the body (keeps the populations consistent)
+    float g[9]; for(int i=0;i<9;i++) g[i]=fAt(OPP[i],p);
+    outA=vec4(g[0],g[1],g[2],g[3]); outB=vec4(g[4],g[5],g[6],g[7]); outC=vec4(g[8],1.0,0.0,0.0);
+    return;
+  }
+  if(p.x==NX-1){ // outlet: zero-gradient
+    ivec2 s=p-ivec2(1,0);
+    vec4 a=texelFetch(texA,s,0), b=texelFetch(texB,s,0), c=texelFetch(texC,s,0);
+    outA=a; outB=b; outC=c; return;
+  }
+  if(p.x==0||p.y==0||p.y==NY-1){ // inlet + far-field: equilibrium at freestream
+    vec2 u=vec2(U0,0.0); float g[9]; for(int i=0;i<9;i++) g[i]=feq(i,1.0,u);
+    outA=vec4(g[0],g[1],g[2],g[3]); outB=vec4(g[4],g[5],g[6],g[7]); outC=vec4(g[8],1.0,U0,0.0);
+    return;
+  }
+  // streaming with half-way bounce-back on the airfoil
+  float fin[9];
+  for(int i=0;i<9;i++){
+    ivec2 s=p-E[i];
+    fin[i]= solidAt(s) ? fAt(OPP[i],p) : fAt(i,s);
+  }
+  float rho=0.0; vec2 u=vec2(0.0);
+  for(int i=0;i<9;i++){ rho+=fin[i]; u+=vec2(E[i])*fin[i]; }
+  u/=rho;
+  rho=clamp(rho,0.5,2.0);
+  float sp=length(u); if(sp>0.3) u*=0.3/sp;
+
+  // Smagorinsky: effective tau from the non-equilibrium momentum flux
+  float Pxx=0.0,Pyy=0.0,Pxy=0.0;
+  for(int i=0;i<9;i++){
+    float fn=fin[i]-feq(i,rho,u); vec2 e=vec2(E[i]);
+    Pxx+=e.x*e.x*fn; Pyy+=e.y*e.y*fn; Pxy+=e.x*e.y*fn;
+  }
+  float Q=sqrt(Pxx*Pxx+Pyy*Pyy+2.0*Pxy*Pxy);
+  float xs=float(p.x)/float(NX);
+  float tauL=mix(tau0,spongeTau,smoothstep(spongeStart,1.0,xs));
+  float tauE=0.5*(tauL+sqrt(tauL*tauL+18.0*1.41421356*cs*cs*Q/rho));
+
+  float fo[9];
+  for(int i=0;i<9;i++) fo[i]=fin[i]-(fin[i]-feq(i,rho,u))/tauE;
+  outA=vec4(fo[0],fo[1],fo[2],fo[3]); outB=vec4(fo[4],fo[5],fo[6],fo[7]);
+  outC=vec4(fo[8],rho,u);
+}`;
+
+// Smoke: semi-Lagrangian advection of a dye field released from a rake of
+// thin streams at the inlet.
+const LBM_DYE_FS = () => `#version 300 es
+precision highp float;
+${LBM_GLSL_CONST()}
+uniform sampler2D texDye, texC, texMask;
+uniform float steps;
+out vec4 o;
+void main(){
+  ivec2 p=ivec2(gl_FragCoord.xy);
+  vec2 uv=gl_FragCoord.xy/vec2(NX,NY);
+  if(texelFetch(texMask,p,0).r>0.5){ o=vec4(0.0); return; }
+  if(p.x<3){
+    float y=gl_FragCoord.y;
+    float band=1.0-smoothstep(1.0,2.2,abs(mod(y,12.0)-6.0));
+    o=vec4(band,0.0,0.0,1.0); return;
+  }
+  vec2 u=texelFetch(texC,p,0).ba;
+  vec2 back=uv-u*steps/vec2(NX,NY);
+  vec2 mid=uv-0.5*u*steps/vec2(NX,NY);
+  vec2 um=texture(texC,mid).ba; // NEAREST lookup is fine for the midpoint
+  back=uv-um*steps/vec2(NX,NY);
+  float d=texture(texDye,back).r;
+  o=vec4(d*0.9995,0.0,0.0,1.0);
+}`;
+
+// Particle update: RK2 through the (bilinear) lattice velocity.
+// State = (x, y, life, age). Tracers enter only at the inlet, at a height
+// fixed per particle (spread evenly, a third biased to the centre band), and
+// normally live until they leave the domain. Only tracers trapped in slow
+// recirculation run out of life; those, like every tracer, fade out and in
+// smoothly (see the trail shader), so nothing pops on or off mid-screen.
+const LBM_PART_FS = () => `#version 300 es
+precision highp float; precision highp int;
+${LBM_GLSL_CONST()}
+uniform sampler2D texState, texC, texMask;
+uniform float steps, seed, U0;
+uniform int PT;
+out vec4 o;
+float hash(float n){ return fract(sin(n)*43758.5453123); }
+vec2 vel(vec2 w){ // world -> lattice velocity (cells/step), bilinear
+  vec2 c=vec2((w.x-DX0)/DXW*float(NX),(w.y-DY0)/DYH*float(NY))-0.5;
+  vec2 i0=floor(c); vec2 t=c-i0;
+  ivec2 a=clamp(ivec2(i0),ivec2(0),ivec2(NX-2,NY-2));
+  vec2 u00=texelFetch(texC,a,0).ba, u10=texelFetch(texC,a+ivec2(1,0),0).ba;
+  vec2 u01=texelFetch(texC,a+ivec2(0,1),0).ba, u11=texelFetch(texC,a+ivec2(1,1),0).ba;
+  return mix(mix(u00,u10,t.x),mix(u01,u11,t.x),t.y);
+}
+bool solid(vec2 w){
+  ivec2 c=ivec2(int((w.x-DX0)/DXW*float(NX)),int((w.y-DY0)/DYH*float(NY)));
+  if(c.x<0||c.y<0||c.x>=NX||c.y>=NY) return false;
+  return texelFetch(texMask,c,0).r>0.5;
+}
+void main(){
+  ivec2 tc=ivec2(gl_FragCoord.xy);
+  float id=float(tc.y*PT+tc.x);
+  vec4 s=texelFetch(texState,tc,0);
+  vec2 pos=s.xy; float life=s.z, age=s.w;
+  float lane=hash(id*0.6180339)<0.33 ? DY0+DYH*(0.5+(hash(id*1.4142)-0.5)/3.0) : DY0+DYH*(0.02+0.96*hash(id*2.7182));
+  float sub=max(1.0,ceil(steps/12.0)); float h=steps/sub;
+  vec2 u=vec2(0.0);
+  for(int k=0;k<16;k++){
+    if(float(k)>=sub) break;
+    vec2 u1=vel(pos);
+    vec2 u2=vel(pos+0.5*h*u1*CELL);
+    u=u2; pos+=h*u2*CELL;
+  }
+  // slow = trapped in recirculation: use up life faster so it gets recycled
+  bool slow=dot(u,u)<(0.04*U0)*(0.04*U0);
+  life-= slow?4.0:1.0;
+  age+=1.0;
+  bool out_=pos.x<DX0||pos.x>DX0+DXW||pos.y<DY0||pos.y>DY0+DYH;
+  if(life<=0.0||out_||solid(pos)){
+    float r=hash(id*1.37+seed);
+    pos=vec2(DX0+0.004+0.02*r,lane);
+    life=900.0+600.0*hash(id*7.91+seed*1.3);
+    age=0.0;
+  }
+  o=vec4(pos,life,age);
+}`;
+
+const LBM_TRAIL_VS = () => `#version 300 es
+precision highp float; precision highp int;
+${LBM_GLSL_CONST()}
+uniform sampler2D stOld, stNew, texC;
+uniform int PT, fieldMode;
+uniform float U0, maxS;
+out vec4 vCol;
+vec3 speedColor(float t){
+  vec3 C[10]=vec3[10](vec3(0,0,40),vec3(0,0,180),vec3(0,80,255),vec3(0,180,255),vec3(0,255,255),vec3(0,255,140),vec3(60,255,0),vec3(255,255,0),vec3(255,140,0),vec3(255,0,0));
+  t=clamp(t,0.0,1.0); float f=t*9.0; int i=min(int(floor(f)),8);
+  return mix(C[i],C[i+1],f-float(i))/255.0;
+}
+void main(){
+  int pid=gl_VertexID/2, end=gl_VertexID-pid*2;
+  ivec2 tc=ivec2(pid%PT,pid/PT);
+  vec4 a=texelFetch(stOld,tc,0), b=texelFetch(stNew,tc,0);
+  bool jumped=b.w<a.w||distance(a.xy,b.xy)>0.08;
+  vec2 p=(end==0&&!jumped)?a.xy:b.xy;
+  gl_Position=vec4((p.x-DX0)/DXW*2.0-1.0,(p.y-DY0)/DYH*2.0-1.0,0.0,1.0);
+  vec2 c=vec2((b.x-DX0)/DXW*float(NX),(b.y-DY0)/DYH*float(NY));
+  ivec2 ci=clamp(ivec2(c),ivec2(0),ivec2(NX-1,NY-1));
+  float t=min(length(texelFetch(texC,ci,0).ba)/U0/max(maxS*0.92,1e-3),1.0);
+  if(fieldMode==2){ float w=(160.0+t*95.0)/255.0; vCol=vec4(w,w,w,0.4); }
+  else{
+    vec3 base=fieldMode==1?vec3(255.0,193.0,66.0)/255.0:speedColor(t);
+    float lum=0.55+t*0.45;
+    vCol=vec4(base*0.4+0.6*lum,0.75);
+  }
+  vCol.a*=smoothstep(0.0,25.0,b.w)*smoothstep(0.0,60.0,b.z);
+  if(jumped) vCol.a=0.0;
+}`;
+
+const LBM_TRAIL_FS = `#version 300 es
+precision highp float;
+in vec4 vCol; out vec4 o;
+void main(){ o=vec4(vCol.rgb*vCol.a,vCol.a); }`;
+
+const LBM_FADE_FS = `#version 300 es
+precision highp float;
+uniform float fade; out vec4 o;
+void main(){ o=vec4(0.0,0.0,0.0,fade); }`;
+
+// Per-cell display scalar (normalised 0..1, or -1..1 for vorticity) + solid flag.
+const LBM_FIELD_FS = () => `#version 300 es
+precision highp float;
+${LBM_GLSL_CONST()}
+uniform sampler2D texC, texMask, texDye;
+uniform int fieldMode;
+uniform float U0, maxS, cpMin, cpMax, vortFull;
+out vec4 o;
+void main(){
+  ivec2 p=ivec2(gl_FragCoord.xy);
+  float solid=texelFetch(texMask,p,0).r;
+  vec4 c=texelFetch(texC,p,0);
+  float t=0.0;
+  if(fieldMode==0) t=length(c.ba)/U0/max(maxS*0.92,1e-6);
+  else if(fieldMode==1) t=((c.g-1.0)/(1.5*U0*U0)-cpMin)/max(cpMax-cpMin,1e-6);
+  else if(fieldMode==2){
+    ivec2 q=clamp(p,ivec2(1),ivec2(NX-2,NY-2));
+    float w=0.5*(texelFetch(texC,q+ivec2(1,0),0).a-texelFetch(texC,q-ivec2(1,0),0).a)
+           -0.5*(texelFetch(texC,q+ivec2(0,1),0).b-texelFetch(texC,q-ivec2(0,1),0).b);
+    t=w/vortFull;
+  } else t=texelFetch(texDye,p,0).r;
+  o=vec4(t,solid,0.0,1.0);
+}`;
+
+// Final image for the display window: smooth colour field + trails.
+const LBM_COMPOSITE_FS = () => `#version 300 es
+precision highp float;
+${LBM_GLSL_CONST()}
+uniform sampler2D texField, texTrail;
+uniform int fieldMode;
+uniform vec4 view; // VX0, VY0, VXW, VYH
+in vec2 vUV; out vec4 o;
+vec3 speedColor(float t){
+  vec3 C[10]=vec3[10](vec3(0,0,40),vec3(0,0,180),vec3(0,80,255),vec3(0,180,255),vec3(0,255,255),vec3(0,255,140),vec3(60,255,0),vec3(255,255,0),vec3(255,140,0),vec3(255,0,0));
+  t=clamp(t,0.0,1.0); float f=t*9.0; int i=min(int(floor(f)),8);
+  return mix(C[i],C[i+1],f-float(i))/255.0;
+}
+vec3 cpColor(float t){
+  vec3 C[8]=vec3[8](vec3(20,50,160),vec3(40,110,210),vec3(100,175,235),vec3(190,220,245),vec3(248,248,248),vec3(248,214,140),vec3(240,150,60),vec3(205,50,25));
+  t=clamp(t,0.0,1.0); float f=t*7.0; int i=min(int(floor(f)),6);
+  return mix(C[i],C[i+1],f-float(i))/255.0;
+}
+vec3 vortColor(float t){
+  t=clamp(t,-1.0,1.0);
+  vec3 bg=vec3(0.06,0.07,0.11);
+  return t<0.0?mix(bg,vec3(0.15,0.5,0.98),-t):mix(bg,vec3(0.98,0.28,0.18),t);
+}
+void main(){
+  vec2 w=view.xy+vUV*view.zw;
+  vec2 g=vec2((w.x-DX0)/DXW,(w.y-DY0)/DYH);
+  vec4 f=texture(texField,g);
+  vec3 col;
+  if(fieldMode==0) col=speedColor(f.r);
+  else if(fieldMode==1) col=cpColor(f.r);
+  else if(fieldMode==2) col=vortColor(f.r);
+  else { vec3 bg=vec3(0.035,0.045,0.08); col=mix(bg,vec3(0.93,0.95,1.0),clamp(f.r*1.15,0.0,1.0)); }
+  col=mix(col,vec3(0.039,0.043,0.078),smoothstep(0.35,0.65,f.g));
+  if(fieldMode!=3){ vec4 tr=texture(texTrail,g); col=tr.rgb+col*(1.0-tr.a); }
+  o=vec4(col,1.0);
+}`;
+
+// ── one tunnel instance ─────────────────────────────────────────────────
+function createTunnel(opts) {
+  const { canvas, coords, name, ids } = opts;
+  const { NX, NY, DX0, DX1, DY0, DY1, VX0, VX1, VY0, VY1, PT } = LBM;
+  const W = 780, H = 360, PX = 54, PY = 26, RIGHT = 142;
+  const PW = W - PX - RIGHT, PH = H - 2 * PY;
+  const cx = canvas.getContext('2d');
+  const $ = (id) => (id ? document.getElementById(id) : null);
+
+  const state = {
+    U0: 0.06, aDeg: 6, fieldMode: 0, nPart: LBM.TRAILS,
+    maxS: 1.6, cpMin: -1.5, cpMax: 1.0, CL: null, CD: null, sep: 0, frame: 0,
+  };
+
+  // offscreen GL canvas holds just the display window
+  const glcv = document.createElement('canvas');
+  glcv.width = PW * 2; glcv.height = PH * 2;
+  let gl = null, ok = false, err = '';
+  try {
+    gl = glcv.getContext('webgl2', { alpha: false, antialias: false, depth: false, stencil: false, preserveDrawingBuffer: false });
+    if (!gl) throw new Error('WebGL2 unavailable');
+    if (!gl.getExtension('EXT_color_buffer_float')) throw new Error('EXT_color_buffer_float unavailable');
+    ok = true;
+  } catch (e) { err = e.message; }
+
+  const prog = {}, U = {};
+  function compile(src, type) {
+    const s = gl.createShader(type); gl.shaderSource(s, src); gl.compileShader(s);
+    if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) throw new Error('shader: ' + gl.getShaderInfoLog(s));
+    return s;
+  }
+  function program(key, vs, fs, uniforms) {
+    const p = gl.createProgram();
+    gl.attachShader(p, compile(vs, gl.VERTEX_SHADER)); gl.attachShader(p, compile(fs, gl.FRAGMENT_SHADER));
+    gl.linkProgram(p);
+    if (!gl.getProgramParameter(p, gl.LINK_STATUS)) throw new Error('link: ' + gl.getProgramInfoLog(p));
+    prog[key] = p; U[key] = {};
+    uniforms.forEach((n) => { U[key][n] = gl.getUniformLocation(p, n); });
+  }
+  function tex(w, h, ifmt, fmt, type, filter, data) {
+    const t = gl.createTexture();
+    gl.bindTexture(gl.TEXTURE_2D, t);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, filter);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, filter);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
+    gl.texImage2D(gl.TEXTURE_2D, 0, ifmt, w, h, 0, fmt, type, data || null);
+    return t;
+  }
+  function fbo(texs) {
+    const f = gl.createFramebuffer();
+    gl.bindFramebuffer(gl.FRAMEBUFFER, f);
+    texs.forEach((t, i) => gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0 + i, gl.TEXTURE_2D, t, 0));
+    gl.drawBuffers(texs.map((_, i) => gl.COLOR_ATTACHMENT0 + i));
+    if (gl.checkFramebufferStatus(gl.FRAMEBUFFER) !== gl.FRAMEBUFFER_COMPLETE) throw new Error('FBO incomplete');
+    return f;
+  }
+  const f32 = (w, h, d, filt) => tex(w, h, gl.RGBA32F, gl.RGBA, gl.FLOAT, filt || gl.NEAREST, d);
+  const f16 = (w, h, filt) => tex(w, h, gl.RGBA16F, gl.RGBA, gl.HALF_FLOAT, filt, null);
+
+  let lat, cur = 0, maskTex = null, dye, dyeCur = 0, parts, partCur = 0, trailT, trailF, fieldT, fieldF;
+  function bind(unit, t, loc) { gl.activeTexture(gl.TEXTURE0 + unit); gl.bindTexture(gl.TEXTURE_2D, t); gl.uniform1i(loc, unit); }
+
+  function initLattice() {
+    const u0 = state.U0, w = [4 / 9, 1 / 9, 1 / 9, 1 / 9, 1 / 9, 1 / 36, 1 / 36, 1 / 36, 1 / 36];
+    const e = [[0, 0], [1, 0], [0, 1], [-1, 0], [0, -1], [1, 1], [-1, 1], [-1, -1], [1, -1]];
+    const f = e.map(([ex], i) => w[i] * (1 + 3 * ex * u0 + 4.5 * ex * ex * u0 * u0 - 1.5 * u0 * u0));
+    const n = NX * NY, a = new Float32Array(n * 4), b = new Float32Array(n * 4), c = new Float32Array(n * 4);
+    for (let i = 0; i < n; i++) {
+      a.set([f[0], f[1], f[2], f[3]], i * 4); b.set([f[4], f[5], f[6], f[7]], i * 4); c.set([f[8], 1, u0, 0], i * 4);
+    }
+    lat = [0, 1].map(() => { const t = [f32(NX, NY, a), f32(NX, NY, b), f32(NX, NY, c)]; return { t, f: fbo(t) }; });
+  }
+  function initParticles() {
+    // lanes are derived from the particle id on the GPU; start everyone at a
+    // random spot so the screen is evenly filled from the first frame
+    const n = PT * PT, d = new Float32Array(n * 4);
+    for (let i = 0; i < n; i++) {
+      d.set([DX0 + Math.random() * (DX1 - DX0), DY0 + Math.random() * (DY1 - DY0), 300 + Math.random() * 900, 25 + Math.random() * 50], i * 4);
+    }
+    parts = [0, 1].map(() => { const t = f32(PT, PT, d); return { t, f: fbo([t]) }; });
+  }
+
+  if (ok) {
+    try {
+      program('step', LBM_VS, LBM_STEP_FS(), ['texA', 'texB', 'texC', 'texMask', 'tau0', 'cs', 'U0', 'spongeStart', 'spongeTau']);
+      program('dye', LBM_VS, LBM_DYE_FS(), ['texDye', 'texC', 'texMask', 'steps']);
+      program('part', LBM_VS, LBM_PART_FS(), ['texState', 'texC', 'texMask', 'steps', 'seed', 'U0', 'PT']);
+      program('trail', LBM_TRAIL_VS(), LBM_TRAIL_FS, ['stOld', 'stNew', 'texC', 'PT', 'fieldMode', 'U0', 'maxS']);
+      program('fade', LBM_VS, LBM_FADE_FS, ['fade']);
+      program('field', LBM_VS, LBM_FIELD_FS(), ['texC', 'texMask', 'texDye', 'fieldMode', 'U0', 'maxS', 'cpMin', 'cpMax', 'vortFull']);
+      program('comp', LBM_VS, LBM_COMPOSITE_FS(), ['texField', 'texTrail', 'fieldMode', 'view']);
+      initLattice();
+      dye = [0, 1].map(() => { const t = f16(NX, NY, gl.LINEAR); return { t, f: fbo([t]) }; });
+      initParticles();
+      trailT = f16(LBM.TRAIL_W, LBM.TRAIL_H, gl.LINEAR); trailF = fbo([trailT]);
+      fieldT = f16(NX, NY, gl.LINEAR); fieldF = fbo([fieldT]);
+      gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    } catch (e) { ok = false; err = e.message; }
+  }
+
+  // ── geometry ──
+  let sol = null;
+  const baseCoords = coords && coords.length > 2 ? coords : lbmNaca4(2, 4, 12, 60);
+  function applyGeometry(aDeg) {
+    state.aDeg = aDeg;
+    const { xp, yp } = lbmPanelise(lbmRotate(baseCoords, aDeg));
+    sol = { xp, yp, IN: lbmRasterMask(xp, yp) };
+    if (ok) { if (maskTex) gl.deleteTexture(maskTex); maskTex = tex(NX, NY, gl.R8, gl.RED, gl.UNSIGNED_BYTE, gl.NEAREST, sol.IN); }
+  }
+  applyGeometry(6);
+
+  // ── GPU passes ──
+  function quad() { gl.drawArrays(gl.TRIANGLES, 0, 3); }
+  function stepPass() {
+    const s = lat[cur], d = lat[1 - cur], u = U.step;
+    gl.bindFramebuffer(gl.FRAMEBUFFER, d.f); gl.viewport(0, 0, NX, NY); gl.useProgram(prog.step);
+    bind(0, s.t[0], u.texA); bind(1, s.t[1], u.texB); bind(2, s.t[2], u.texC); bind(3, maskTex, u.texMask);
+    gl.uniform1f(u.tau0, LBM.TAU0); gl.uniform1f(u.cs, LBM.CS); gl.uniform1f(u.U0, state.U0);
+    gl.uniform1f(u.spongeStart, LBM.SPONGE_START); gl.uniform1f(u.spongeTau, LBM.SPONGE_TAU);
+    quad(); cur = 1 - cur;
+  }
+  function dyePass(steps) {
+    const s = dye[dyeCur], d = dye[1 - dyeCur];
+    gl.bindFramebuffer(gl.FRAMEBUFFER, d.f); gl.viewport(0, 0, NX, NY); gl.useProgram(prog.dye);
+    bind(0, s.t, U.dye.texDye); bind(1, lat[cur].t[2], U.dye.texC); bind(2, maskTex, U.dye.texMask);
+    gl.uniform1f(U.dye.steps, steps); quad(); dyeCur = 1 - dyeCur;
+  }
+  function particlePass(steps) {
+    const s = parts[partCur], d = parts[1 - partCur];
+    gl.bindFramebuffer(gl.FRAMEBUFFER, d.f); gl.viewport(0, 0, PT, PT); gl.useProgram(prog.part);
+    bind(0, s.t, U.part.texState); bind(1, lat[cur].t[2], U.part.texC); bind(2, maskTex, U.part.texMask);
+    gl.uniform1f(U.part.steps, steps); gl.uniform1f(U.part.seed, Math.random() * 1000); gl.uniform1f(U.part.U0, state.U0); gl.uniform1i(U.part.PT, PT);
+    quad();
+    // fade old trails, then draw this frame's segments (premultiplied alpha)
+    gl.bindFramebuffer(gl.FRAMEBUFFER, trailF); gl.viewport(0, 0, LBM.TRAIL_W, LBM.TRAIL_H);
+    gl.enable(gl.BLEND);
+    gl.useProgram(prog.fade); gl.blendFunc(gl.ZERO, gl.ONE_MINUS_SRC_ALPHA); gl.uniform1f(U.fade.fade, 0.06); quad();
+    if (state.fieldMode !== 3 && state.nPart > 0) {
+      gl.useProgram(prog.trail); gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
+      const u = U.trail;
+      bind(0, s.t, u.stOld); bind(1, d.t, u.stNew); bind(2, lat[cur].t[2], u.texC);
+      gl.uniform1i(u.PT, PT); gl.uniform1i(u.fieldMode, state.fieldMode); gl.uniform1f(u.U0, state.U0); gl.uniform1f(u.maxS, state.maxS);
+      gl.drawArrays(gl.LINES, 0, state.nPart * 2);
+    }
+    gl.disable(gl.BLEND);
+    partCur = 1 - partCur;
+  }
+  function displayPass() {
+    gl.bindFramebuffer(gl.FRAMEBUFFER, fieldF); gl.viewport(0, 0, NX, NY); gl.useProgram(prog.field);
+    const u = U.field;
+    bind(0, lat[cur].t[2], u.texC); bind(1, maskTex, u.texMask); bind(2, dye[dyeCur].t, u.texDye);
+    gl.uniform1i(u.fieldMode, state.fieldMode); gl.uniform1f(u.U0, state.U0); gl.uniform1f(u.maxS, state.maxS);
+    gl.uniform1f(u.cpMin, state.cpMin); gl.uniform1f(u.cpMax, state.cpMax);
+    gl.uniform1f(u.vortFull, LBM.VORT_C * state.U0 / LBM.CHORD_L);
+    quad();
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null); gl.viewport(0, 0, glcv.width, glcv.height); gl.useProgram(prog.comp);
+    bind(0, fieldT, U.comp.texField); bind(1, trailT, U.comp.texTrail);
+    gl.uniform1i(U.comp.fieldMode, state.fieldMode); gl.uniform4f(U.comp.view, VX0, VY0, VX1 - VX0, VY1 - VY0);
+    quad();
+  }
+
+  // ── read-back stats (every few frames) ──
+  const macro = new Float32Array(NX * NY * 4);
+  const FDX = [1, 0, -1, 0], FDY = [0, 1, 0, -1];
+  const vx0 = Math.floor((VX0 - DX0) / (DX1 - DX0) * NX), vx1 = Math.ceil((VX1 - DX0) / (DX1 - DX0) * NX);
+  const vy0 = Math.floor((VY0 - DY0) / (DY1 - DY0) * NY), vy1 = Math.ceil((VY1 - DY0) / (DY1 - DY0) * NY);
+  function readStats() {
+    gl.bindFramebuffer(gl.FRAMEBUFFER, lat[cur].f);
+    gl.readBuffer(gl.COLOR_ATTACHMENT2);
+    gl.readPixels(0, 0, NX, NY, gl.RGBA, gl.FLOAT, macro);
+    const IN = sol.IN, U0 = state.U0;
+    let mx = 0, cmin = Infinity, cmax = -Infinity;
+    for (let y = vy0; y < vy1; y++) for (let x = vx0; x < vx1; x++) {
+      const i = y * NX + x; if (IN[i]) continue;
+      const o = i * 4, s = Math.hypot(macro[o + 2], macro[o + 3]) / U0, cp = (macro[o + 1] - 1) / (1.5 * U0 * U0);
+      if (s > mx && s < 4) mx = s;
+      if (cp > -6 && cp < 1.2) { if (cp < cmin) cmin = cp; if (cp > cmax) cmax = cp; }
+    }
+    if (mx > 0) state.maxS = state.maxS * 0.7 + mx * 0.3;
+    if (isFinite(cmin)) { state.cpMin = state.cpMin * 0.7 + cmin * 0.3; state.cpMax = state.cpMax * 0.7 + cmax * 0.3; }
+    let fx = 0, fy = 0, surf = 0, rev = 0;
+    for (let y = 1; y < NY - 1; y++) for (let x = 1; x < NX - 1; x++) {
+      const c = y * NX + x; if (!IN[c]) continue;
+      for (let j = 0; j < 4; j++) {
+        const nc = (y + FDY[j]) * NX + x + FDX[j]; if (IN[nc]) continue;
+        const p = macro[nc * 4 + 1] / 3; fx -= p * FDX[j]; fy -= p * FDY[j];
+        surf++; if (macro[nc * 4 + 2] < 0) rev++;
+      }
+    }
+    if (surf) {
+      const q = 0.5 * U0 * U0 * LBM.CHORD_L, CL = fy / q, CD = fx / q;
+      if (isFinite(CL) && isFinite(CD)) {
+        state.CL = state.CL === null ? CL : state.CL * 0.8 + CL * 0.2;
+        state.CD = state.CD === null ? CD : state.CD * 0.8 + CD * 0.2;
+      }
+      state.sep = state.sep * 0.75 + (rev / surf) * 0.25;
+    }
+    updateStatsUI();
+  }
+  function updateStatsUI() {
+    const set = (id, t) => { const e = $(id); if (e) e.textContent = t; };
+    set(ids.cl, state.CL === null ? '—' : state.CL.toFixed(3));
+    set(ids.cd, state.CD === null ? '—' : Math.max(state.CD, 0).toFixed(3));
+    set(ids.re, (Math.round(lbmSimRe(state.U0) / 10) * 10).toLocaleString());
+    const pct = Math.round(state.sep * 100), el = $(ids.sep), card = $(ids.sepCard);
+    if (!el || !card) return;
+    if (pct < 5) { el.textContent = 'Attached'; card.style.borderColor = '#2a3050'; el.style.color = '#4ade80'; }
+    else if (pct < 25) { el.textContent = pct + '% sep'; card.style.borderColor = '#854d0e'; el.style.color = '#facc15'; }
+    else { el.textContent = 'STALL ≈ ' + pct + '% sep'; card.style.borderColor = '#991b1b'; el.style.color = '#f87171'; }
+  }
+
+  // ── 2D overlay ──
+  const w2cX = (x) => PX + (x - VX0) / (VX1 - VX0) * PW;
+  const w2cY = (y) => PY + (1 - (y - VY0) / (VY1 - VY0)) * PH;
+  function drawFoil() {
+    cx.beginPath();
+    sol.xp.forEach((x, i) => { const px = w2cX(x), py = w2cY(sol.yp[i]); i ? cx.lineTo(px, py) : cx.moveTo(px, py); });
+    cx.closePath(); cx.fillStyle = '#0d1018'; cx.fill();
+    cx.strokeStyle = 'rgba(200,215,255,0.85)'; cx.lineWidth = 1.4; cx.stroke();
+  }
+  function drawBar() {
+    const bx = PX + PW + 14, by = PY, bw = 10, bh = PH, m = state.fieldMode;
+    for (let i = 0; i < bh; i++) {
+      let r, g, b; const t = 1 - i / bh;
+      if (m === 1) [r, g, b] = lbmLerp(t, LBM_CP);
+      else if (m === 2) { const v = 1 - 2 * i / bh; const bg = [15, 18, 28]; const end = v < 0 ? [38, 128, 250] : [250, 71, 46]; [r, g, b] = lbmLerp(Math.abs(v), [bg, end]); }
+      else if (m === 3) [r, g, b] = lbmLerp(t, [[9, 11, 20], [237, 242, 255]]);
+      else [r, g, b] = lbmLerp(t, LBM_SPEED);
+      cx.fillStyle = `rgb(${r | 0},${g | 0},${b | 0})`; cx.fillRect(bx, by + i, bw, 1.5);
+    }
+    cx.fillStyle = 'rgba(255,255,255,0.55)'; cx.font = '10px system-ui'; cx.textAlign = 'left';
+    let top, bot;
+    if (m === 1) { top = `+Cp ${state.cpMax.toFixed(2)}`; bot = `−Cp ${state.cpMin.toFixed(2)}`; }
+    else if (m === 2) { top = `CCW +${LBM.VORT_C} U/c`; bot = `CW −${LBM.VORT_C} U/c`; }
+    else if (m === 3) { top = 'dense smoke'; bot = 'clear air'; }
+    else { top = `fast ${(state.maxS * 0.92).toFixed(2)} \u00d7 U\u221e`; bot = 'still 0'; }
+    cx.fillText(top, bx + bw + 3, by + 9); cx.fillText(bot, bx + bw + 3, by + bh - 1);
+  }
+  function drawLabels() {
+    cx.fillStyle = 'rgba(255,255,255,0.4)'; cx.font = '10px system-ui'; cx.textAlign = 'center';
+    for (const xv of [0, 0.5, 1.0]) cx.fillText(xv.toFixed(1), w2cX(xv), H - 8);
+    cx.textAlign = 'right';
+    for (const yv of [VY0 * 0.85, 0, VY1 * 0.85]) cx.fillText(yv.toFixed(1), PX - 6, w2cY(yv) + 3);
+    cx.fillStyle = 'rgba(255,255,255,0.75)'; cx.font = '12px system-ui'; cx.textAlign = 'left';
+    cx.fillText(`α = ${state.aDeg.toFixed(1)}°`, PX + 8, PY + 16);
+  }
+  function drawFallback() {
+    cx.fillStyle = '#0a0d18'; cx.fillRect(0, 0, W, H);
+    cx.fillStyle = 'rgba(255,255,255,0.7)'; cx.font = '13px system-ui'; cx.textAlign = 'center';
+    cx.fillText('WebGL2 with floating-point render targets is required for this demo.', W / 2, H / 2 - 8);
+    cx.font = '11px system-ui'; cx.fillStyle = 'rgba(255,255,255,0.45)';
+    cx.fillText(err || 'Your browser or device does not support it.', W / 2, H / 2 + 12);
+  }
+
+  function frame(steps) {
+    if (!ok) { drawFallback(); return; }
+    for (let s = 0; s < steps; s++) stepPass();
+    dyePass(steps);
+    particlePass(steps);
+    displayPass();
+    state.frame++;
+    if (state.frame % 12 === 0) readStats();
+    cx.fillStyle = '#0a0d18'; cx.fillRect(0, 0, W, H);
+    cx.save(); cx.beginPath(); cx.rect(PX, PY, PW, PH); cx.clip();
+    cx.imageSmoothingEnabled = true; cx.imageSmoothingQuality = 'high';
+    cx.drawImage(glcv, PX, PY, PW, PH);
+    drawFoil(); cx.restore();
+    drawBar(); drawLabels();
+  }
+
+  function savePng() {
+    const aoa = state.aDeg.toFixed(1);
+    const nm = (name || 'airfoil').replace(/\s+/g, '_');
+    canvas.toBlob((blob) => {
+      const a = document.createElement('a'); a.href = URL.createObjectURL(blob);
+      a.download = `${nm}_alpha${aoa}deg_lbm.png`; a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+    }, 'image/png');
+  }
+
+  // probe used by the self-test: is the lattice still finite?
+  function healthy() {
+    if (!ok) return false;
+    gl.bindFramebuffer(gl.FRAMEBUFFER, lat[cur].f); gl.readBuffer(gl.COLOR_ATTACHMENT2);
+    gl.readPixels(0, 0, NX, NY, gl.RGBA, gl.FLOAT, macro);
+    for (let i = 0; i < macro.length; i += 97) if (!isFinite(macro[i])) return false;
+    return true;
+  }
+
+  updateStatsUI();
+  return {
+    ok: () => ok,
+    frame,
+    savePng,
+    healthy,
+    _particles: () => { // test hook
+      const out = new Float32Array(PT * PT * 4);
+      gl.bindFramebuffer(gl.FRAMEBUFFER, parts[partCur].f); gl.readBuffer(gl.COLOR_ATTACHMENT0);
+      gl.readPixels(0, 0, PT, PT, gl.RGBA, gl.FLOAT, out); return Array.from(out);
+    },
+    sample: (idx) => { healthy(); return idx.map((i) => [macro[i * 4 + 1], macro[i * 4 + 2], macro[i * 4 + 3]]); }, // test hook
+    state,
+    setAlpha: (a) => applyGeometry(a),
+    setU0: (u) => { state.U0 = u; },
+    setField: (m) => { state.fieldMode = m; },
+    setTrails: (on) => { state.nPart = on ? LBM.TRAILS : 0; },
+  };
+}
+
+// ── shared driver: one animation loop, steps per frame tuned to the GPU ─
+function startTunnels(tunnels, onSteps) {
+  const MIN_STEPS = 2, MAX_STEPS = 48;
+  let steps = 10, boost = 0, last = null, refresh = 16.7, slowFrames = 0;
+  const recent = [];
+  if (window.__LBM_MANUAL) return { boost: () => {}, steps: () => 0 }; // test hook: frames driven by hand
+  function loop(t) {
+    const dt = last === null ? 16.7 : t - last; last = t;
+    if (dt > 0 && dt < 200) {
+      recent.push(dt); if (recent.length > 90) recent.shift();
+      refresh = Math.max(6.5, Math.min(...recent));
+      if (boost < 1) {
+        if (dt > refresh * 1.45) { slowFrames++; if (slowFrames >= 3) { steps = Math.max(MIN_STEPS, Math.floor(steps * 0.85)); slowFrames = 0; } }
+        else { slowFrames = 0; if (dt < refresh * 1.2) steps = Math.min(MAX_STEPS, steps + 0.5); }
+      }
+    }
+    const n = Math.round(steps + boost);
+    boost = boost > 1 ? boost * 0.96 : 0;
+    tunnels.forEach((tn) => tn.frame(n));
+    if (onSteps) onSteps(Math.round(steps));
+    requestAnimationFrame(loop);
+  }
+  requestAnimationFrame(loop);
+  return { boost: (n) => { boost = Math.max(boost, Math.min(n, 40)); }, steps: () => Math.round(steps) };
+}
+
+
+const tn = createTunnel({
+  canvas: document.getElementById('fc2'), coords: USER_COORDS, name: USER_NAME,
+  ids: { cl: 'clv2', cd: 'cdv2', re: 'rev2', sep: 'sepv2', sepCard: 'sep-card' },
+});
+const eng = document.getElementById('eng2');
+let lastShown = -1;
+const driver = startTunnels([tn], (s) => {
+  if (s !== lastShown) { lastShown = s; eng.innerHTML = 'D2Q9 lattice-Boltzmann &middot; 640&times;320 &middot; Smagorinsky LES &middot; WebGL2 &middot; ' + s + ' steps/frame'; }
+});
+window.__lbm = { tunnels: [tn], driver };
+
+let deb = null;
+document.getElementById('as2').addEventListener('input', function () {
+  const a = parseFloat(this.value);
+  document.getElementById('av2').textContent = a.toFixed(1) + '°';
+  clearTimeout(deb); deb = setTimeout(() => { tn.setAlpha(a); driver.boost(30); }, 35);
+});
+document.getElementById('fd2').addEventListener('change', function () {
+  tn.setField({ speed: 0, cp: 1, vort: 2, smoke: 3 }[this.value]);
+});
+document.getElementById('tr2').addEventListener('change', function () { tn.setTrails(this.checked); });
+document.getElementById('us2').addEventListener('input', function () {
+  const u = parseInt(this.value) / 1000;
+  tn.setU0(u);
+  document.getElementById('uv2').textContent = (Math.round(lbmSimRe(u) / 10) * 10).toLocaleString();
+  driver.boost(40);
+});
+document.getElementById('png-btn').addEventListener('click', () => tn.savePng());
+})();
+</script>

@@ -1,12 +1,16 @@
+# Backend (main.py, inverse_design.py)
 fastapi
 uvicorn
+python-multipart
+anyio
+slowapi
+numpy
+scipy
+psycopg2-binary
+
+# Old Streamlit app (app.py, pages/, Dockerfile.frontend)
 streamlit
 pandas
 matplotlib
-numpy
-requests
-python-multipart
 plotly
-anyio
-slowapi
-psycopg2-binary
+requests

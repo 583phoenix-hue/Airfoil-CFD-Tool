@@ -13,6 +13,7 @@ from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
 from anyio import to_thread
+from typing import Optional
 
 # Aeroelasticity modules are still under active development and aren't
 # necessarily committed to every deployment yet. Import them defensively so a
@@ -28,6 +29,15 @@ try:
 except ImportError:
     aero_div = aero_rev = aero_flutter = None
     AEROELASTICITY_AVAILABLE = False
+
+# Inverse design (same defensive pattern): only needs inverse_design.py +
+# numpy/scipy and the stock XFOIL binary.
+try:
+    import inverse_design as inv_design
+    INVERSE_DESIGN_AVAILABLE = True
+except ImportError:
+    inv_design = None
+    INVERSE_DESIGN_AVAILABLE = False
 
 import logging
 
@@ -94,7 +104,7 @@ else:
     IS_WINDOWS = False
     TMP_DIR = "/tmp"
 
-STALE_WORKDIR_PREFIXES = ("run_", "aero_div_", "aero_rev_", "aero_flt_")
+STALE_WORKDIR_PREFIXES = ("run_", "aero_div_", "aero_rev_", "aero_flt_", "inverse_")
 STALE_WORKDIR_MAX_AGE_SECONDS = 3600  # 1 hour
 
 
@@ -812,8 +822,10 @@ def _run_xfoil_mode(
                 parts = clean.split()
                 if len(parts) >= 2:
                     try:
+                        # Cp is the LAST column: XFOIL 6.97 writes "x Cp",
+                        # 6.99 (Windows build) writes "x y Cp".
                         cp_x.append(float(parts[0]))
-                        cp_values.append(float(parts[1]))
+                        cp_values.append(float(parts[-1]))
                     except ValueError:
                         continue
 
@@ -858,14 +870,12 @@ def _run_xfoil_mode(
 
 
 @app.get("/")
-@limiter.limit("10/minute")
 async def root(request: Request):
     return {"status": "ok", "service": "Airfoil CFD API (BL edition)"}
 
 
 @app.head("/health")
 @app.get("/health")
-@limiter.limit("20/minute")
 async def health(request: Request):
     xfoil_exists = os.path.exists(XFOIL_EXE) or (
         not IS_WINDOWS and os.system(f"which {XFOIL_EXE} >/dev/null 2>&1") == 0
@@ -879,7 +889,6 @@ async def health(request: Request):
 
 
 @app.get("/analysis_count")
-@limiter.limit("30/minute")
 async def analysis_count(request: Request):
     """
     Exposes the analysis counter over HTTP for frontends without direct DB
@@ -1004,8 +1013,92 @@ async def upload_airfoil(
 
 
 
+def _json_safe(obj):
+    """Recursively replace NaN/inf (not valid JSON) with None and numpy
+    scalars with plain Python numbers. Avoids importing numpy here so
+    main.py still boots on a deployment without the aeroelasticity stack."""
+    import math as _math
+    if isinstance(obj, dict):
+        return {k: _json_safe(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        return [_json_safe(v) for v in obj]
+    if hasattr(obj, "item") and not isinstance(obj, (str, bytes)):
+        try:
+            obj = obj.item()  # numpy scalar -> Python scalar
+        except Exception:
+            pass
+    if isinstance(obj, bool):
+        return obj
+    if isinstance(obj, float):
+        return obj if _math.isfinite(obj) else None
+    return obj
+
+
+async def _prepare_aero_workdir(prefix: str, file: Optional[UploadFile]):
+    """Create the work dir and, if a file was uploaded, run it through the
+    same coordinate repair pipeline as the main analysis."""
+    run_id = str(uuid.uuid4())[:8]
+    work_dir = os.path.join(TMP_DIR, f"{prefix}{run_id}")
+    os.makedirs(work_dir, exist_ok=True)
+    seed_filename = None
+    if file is not None and file.filename:
+        content_bytes = await file.read()
+        if len(content_bytes) > MAX_FILE_SIZE:
+            raise HTTPException(status_code=400, detail="File too large")
+        raw_path = os.path.join(work_dir, "raw.dat")
+        with open(raw_path, "wb") as f:
+            f.write(content_bytes)
+        coords, _ = parse_dat_file(raw_path)
+        seed_filename = "airfoil_fixed.dat"
+        with open(os.path.join(work_dir, seed_filename), "w") as f:
+            f.write("AIRFOIL\n")
+            for x, y in coords:
+                f.write(f"  {x:.6f}  {y:.6f}\n")
+    return work_dir, seed_filename
+
+
+def _cleanup_workdir(work_dir: str):
+    try:
+        if work_dir and os.path.exists(work_dir):
+            time.sleep(0.2)
+            shutil.rmtree(work_dir, ignore_errors=True)
+    except Exception:
+        pass
+
+
+def _validate_aero_common(reynolds: float, v_start: float, v_step: float, v_max: float, rho: float):
+    if not AEROELASTICITY_AVAILABLE:
+        raise HTTPException(status_code=503, detail="Aeroelasticity module not available on this deployment")
+    if not (MIN_REYNOLDS <= reynolds <= MAX_REYNOLDS):
+        raise HTTPException(status_code=400,
+            detail=f"Reynolds must be {MIN_REYNOLDS:,.0f} to {MAX_REYNOLDS:,.0f}")
+    if v_start <= 0 or v_step <= 0 or v_max <= v_start:
+        raise HTTPException(status_code=400,
+            detail="Speed sweep needs 0 < 'from' < 'up to' and a positive step")
+    if (v_max - v_start) / v_step > 5000:
+        raise HTTPException(status_code=400, detail="Speed step too small for this range (max 5000 points)")
+    if rho <= 0:
+        raise HTTPException(status_code=400, detail="Air density must be positive")
+
+
+def _aero_error(e: Exception, name: str):
+    if AEROELASTICITY_AVAILABLE and isinstance(e, aero_div.XfoilPolarError):
+        logger.warning(f"{name}: {e}")
+        return HTTPException(status_code=422, detail=str(e))
+    logger.error(f"{name}: {e}")
+    return HTTPException(status_code=500, detail=str(e))
+
+
+def _count_analysis():
+    """Bump the public 'analyses run' counter; never fails the request."""
+    try:
+        from db_utils import increment_analysis_count
+        increment_analysis_count()
+    except Exception as e:
+        logger.info(f"increment_analysis_count unavailable: {e}")
+
+
 @app.post("/aeroelasticity/divergence")
-@limiter.limit("5/minute")
 async def aeroelasticity_divergence(
     request: Request,
     file: UploadFile = None,
@@ -1018,66 +1111,37 @@ async def aeroelasticity_divergence(
     span: float = Form(1.0),
     rho: float = Form(1.225),
     v_start: float = Form(5.0),
-    v_step: float = Form(3.0),
-    v_max: float = Form(150.0),
+    v_step: float = Form(5.0),
+    v_max: float = Form(100.0),
 ):
-    if not AEROELASTICITY_AVAILABLE:
-        raise HTTPException(status_code=503, detail="Aeroelasticity module not available on this deployment")
-    if not (MIN_REYNOLDS <= reynolds <= MAX_REYNOLDS):
-        raise HTTPException(status_code=400,
-            detail=f"Reynolds must be {MIN_REYNOLDS:,.0f} to {MAX_REYNOLDS:,.0f}")
+    _validate_aero_common(reynolds, v_start, v_step, v_max, rho)
+    if k_alpha <= 0 or chord <= 0 or span <= 0:
+        raise HTTPException(status_code=400, detail="Stiffness, chord and span must be positive")
+    if not (0.0 <= x_ea_over_c <= 1.0):
+        raise HTTPException(status_code=400, detail="Elastic axis must be between 0 and 100% chord")
 
-    run_id = str(uuid.uuid4())[:8]
-    work_dir = os.path.join(TMP_DIR, f"aero_div_{run_id}")
-    os.makedirs(work_dir, exist_ok=True)
-    seed_filename = None
-
+    work_dir = None
     try:
-        if file is not None and file.filename:
-            content_bytes = await file.read()
-            if len(content_bytes) > MAX_FILE_SIZE:
-                raise HTTPException(status_code=400, detail="File too large")
-            raw_path = os.path.join(work_dir, "raw.dat")
-            with open(raw_path, "wb") as f:
-                f.write(content_bytes)
-            coords, _ = parse_dat_file(raw_path)
-            seed_filename = "airfoil_fixed.dat"
-            with open(os.path.join(work_dir, seed_filename), "w") as f:
-                f.write("AIRFOIL\n")
-                for x, y in coords:
-                    f.write(f"  {x:.6f}  {y:.6f}\n")
-
+        work_dir, seed_filename = await _prepare_aero_workdir("aero_div_", file)
         async with xfoil_semaphore:
             result = await to_thread.run_sync(
-                aero_div.find_divergence_speed_from_velocity,
+                aero_div.analyze_divergence,
                 work_dir, seed_filename, reynolds, ncrit,
                 alpha_root, k_alpha, x_ea_over_c, chord, span, rho,
                 v_start, v_step, v_max,
             )
-
-        return {
-            "success": True,
-            "v_div": result["v_div"],
-            "q_div": result["q_div"],
-            "history": [{"v": (2 * q / rho) ** 0.5, "alpha_elastic_deg": ae, "cl": cl}
-                        for q, ae, cl in result["history"]],
-        }
+        result["success"] = True
+        _count_analysis()
+        return _json_safe(result)
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"aeroelasticity_divergence: {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise _aero_error(e, "aeroelasticity_divergence")
     finally:
-        try:
-            if os.path.exists(work_dir):
-                time.sleep(0.2)
-                shutil.rmtree(work_dir, ignore_errors=True)
-        except Exception:
-            pass
+        _cleanup_workdir(work_dir)
 
 
 @app.post("/aeroelasticity/reversal")
-@limiter.limit("5/minute")
 async def aeroelasticity_reversal(
     request: Request,
     file: UploadFile = None,
@@ -1090,78 +1154,45 @@ async def aeroelasticity_reversal(
     span: float = Form(1.0),
     rho: float = Form(1.225),
     flap_chord_fraction: float = Form(0.25),
+    flap_source: str = Form("xfoil"),
     v_start: float = Form(2.0),
-    v_step: float = Form(2.0),
-    v_max: float = Form(150.0),
+    v_step: float = Form(5.0),
+    v_max: float = Form(100.0),
 ):
-    if not AEROELASTICITY_AVAILABLE:
-        raise HTTPException(status_code=503, detail="Aeroelasticity module not available on this deployment")
-    if not (MIN_REYNOLDS <= reynolds <= MAX_REYNOLDS):
-        raise HTTPException(status_code=400,
-            detail=f"Reynolds must be {MIN_REYNOLDS:,.0f} to {MAX_REYNOLDS:,.0f}")
+    _validate_aero_common(reynolds, v_start, v_step, v_max, rho)
+    if k_alpha <= 0 or chord <= 0 or span <= 0:
+        raise HTTPException(status_code=400, detail="Stiffness, chord and span must be positive")
+    if not (0.0 <= x_ea_over_c <= 1.0):
+        raise HTTPException(status_code=400, detail="Elastic axis must be between 0 and 100% chord")
+    if not (0.05 <= flap_chord_fraction <= 0.6):
+        raise HTTPException(status_code=400, detail="Flap chord fraction must be 0.05 to 0.6")
+    if flap_source not in ("xfoil", "thin_airfoil"):
+        raise HTTPException(status_code=400, detail="flap_source must be 'xfoil' or 'thin_airfoil'")
 
-    run_id = str(uuid.uuid4())[:8]
-    work_dir = os.path.join(TMP_DIR, f"aero_rev_{run_id}")
-    os.makedirs(work_dir, exist_ok=True)
-    seed_filename = None
-
+    work_dir = None
     try:
-        if file is not None and file.filename:
-            content_bytes = await file.read()
-            if len(content_bytes) > MAX_FILE_SIZE:
-                raise HTTPException(status_code=400, detail="File too large")
-            raw_path = os.path.join(work_dir, "raw.dat")
-            with open(raw_path, "wb") as f:
-                f.write(content_bytes)
-            coords, _ = parse_dat_file(raw_path)
-            seed_filename = "airfoil_fixed.dat"
-            with open(os.path.join(work_dir, seed_filename), "w") as f:
-                f.write("AIRFOIL\n")
-                for x, y in coords:
-                    f.write(f"  {x:.6f}  {y:.6f}\n")
-
-        def _run():
-            cl1, _ = aero_div.forward_cl_cm(work_dir, seed_filename, reynolds, alpha_root - 0.5, ncrit)
-            cl2, _ = aero_div.forward_cl_cm(work_dir, seed_filename, reynolds, alpha_root + 0.5, ncrit)
-            import math
-            a0 = (cl2 - cl1) * 180.0 / math.pi
-            q_start = 0.5 * rho * v_start ** 2
-            q_step = 0.5 * rho * ((v_start + v_step) ** 2 - v_start ** 2)
-            max_q = 0.5 * rho * v_max ** 2
-            result = aero_rev.find_reversal_speed(
-                work_dir, seed_filename, reynolds, ncrit,
-                alpha_root, k_alpha, x_ea_over_c, chord, span, rho,
-                flap_chord_fraction, a0,
-                q_start=q_start, q_step=q_step, max_q=max_q,
-            )
-            return a0, result
-
+        work_dir, seed_filename = await _prepare_aero_workdir("aero_rev_", file)
         async with xfoil_semaphore:
-            a0, result = await to_thread.run_sync(_run)
-
-        return {
-            "success": True,
-            "a0_per_rad": a0,
-            "v_reversal": (2 * result["q_reversal"] / rho) ** 0.5 if result["q_reversal"] else None,
-            "q_reversal": result["q_reversal"],
-            "stopped_reason": result["stopped_reason"],
-        }
+            result = await to_thread.run_sync(
+                lambda: aero_rev.analyze_reversal(
+                    work_dir, seed_filename, reynolds, ncrit,
+                    alpha_root, k_alpha, x_ea_over_c, chord, span, rho,
+                    flap_chord_fraction, v_start, v_step, v_max,
+                    flap_source=flap_source,
+                )
+            )
+        result["success"] = True
+        _count_analysis()
+        return _json_safe(result)
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"aeroelasticity_reversal: {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise _aero_error(e, "aeroelasticity_reversal")
     finally:
-        try:
-            if os.path.exists(work_dir):
-                time.sleep(0.2)
-                shutil.rmtree(work_dir, ignore_errors=True)
-        except Exception:
-            pass
+        _cleanup_workdir(work_dir)
 
 
 @app.post("/aeroelasticity/flutter")
-@limiter.limit("5/minute")
 async def aeroelasticity_flutter(
     request: Request,
     file: UploadFile = None,
@@ -1170,82 +1201,198 @@ async def aeroelasticity_flutter(
     alpha_ref: float = Form(2.0),
     m: float = Form(38.49),
     mu: float = Form(8.082),
-    xCG_percent: float = Form(50.0),
+    xCG_percent: float = Form(55.0),
     xEA_percent: float = Form(45.0),
-    kh: float = Form(9621.0),
-    ktheta: float = Form(9621.0),
+    kh: float = Form(9.621),
+    ktheta: float = Form(9.621),
     chord: float = Form(2.0),
     rho: float = Form(1.225),
     use_real_airfoil_data: bool = Form(True),
-    v_start: float = Form(0.5),
+    v_start: float = Form(0.1),
     v_step: float = Form(0.5),
     v_max: float = Form(100.0),
 ):
-    if not AEROELASTICITY_AVAILABLE:
-        raise HTTPException(status_code=503, detail="Aeroelasticity module not available on this deployment")
-    if not (MIN_REYNOLDS <= reynolds <= MAX_REYNOLDS):
-        raise HTTPException(status_code=400,
-            detail=f"Reynolds must be {MIN_REYNOLDS:,.0f} to {MAX_REYNOLDS:,.0f}")
+    _validate_aero_common(reynolds, v_start, v_step, v_max, rho)
+    if min(m, mu, kh, ktheta, chord) <= 0:
+        raise HTTPException(status_code=400, detail="Mass, inertia, stiffnesses and chord must be positive")
+    if not (0.0 <= xCG_percent <= 100.0 and 0.0 <= xEA_percent <= 100.0):
+        raise HTTPException(status_code=400, detail="CG and elastic axis must be between 0 and 100% chord")
 
-    run_id = str(uuid.uuid4())[:8]
-    work_dir = os.path.join(TMP_DIR, f"aero_flt_{run_id}")
-    os.makedirs(work_dir, exist_ok=True)
-    seed_filename = None
     b = chord / 2.0
     xCG = (xCG_percent / 100.0 - 0.5) * chord
     xEA = (xEA_percent / 100.0 - 0.5) * chord
 
+    work_dir = None
     try:
-        if file is not None and file.filename:
-            content_bytes = await file.read()
-            if len(content_bytes) > MAX_FILE_SIZE:
-                raise HTTPException(status_code=400, detail="File too large")
-            raw_path = os.path.join(work_dir, "raw.dat")
-            with open(raw_path, "wb") as f:
-                f.write(content_bytes)
-            coords, _ = parse_dat_file(raw_path)
-            seed_filename = "airfoil_fixed.dat"
-            with open(os.path.join(work_dir, seed_filename), "w") as f:
-                f.write("AIRFOIL\n")
-                for x, y in coords:
-                    f.write(f"  {x:.6f}  {y:.6f}\n")
-
-        def _run():
-            a0_scale = 1.0
-            aero_info = None
-            if use_real_airfoil_data:
-                aero_info = aero_flutter.get_real_aero_params(
-                    work_dir, seed_filename, reynolds, ncrit, alpha_ref
-                )
-                a0_scale = aero_info["a0_scale"]
-            result = aero_flutter.find_flutter_speed(
-                m, mu, xCG, xEA, kh, ktheta, b, rho,
-                U_start=v_start, U_step=v_step, U_max=v_max, a0_scale=a0_scale,
-            )
-            return aero_info, result
-
-        async with xfoil_semaphore:
-            aero_info, result = await to_thread.run_sync(_run)
-
-        return {
-            "success": True,
-            "U_flutter": result["U_flutter"],
-            "omega_flutter": result["omega_flutter"],
-            "k_flutter": result["k_flutter"],
-            "aero_info": aero_info,
-        }
+        work_dir, seed_filename = await _prepare_aero_workdir("aero_flt_", file)
+        call = lambda: aero_flutter.analyze_flutter(
+            work_dir, seed_filename, reynolds, ncrit, alpha_ref,
+            m, mu, xCG, xEA, kh, ktheta, b, rho,
+            use_real_airfoil_data=use_real_airfoil_data,
+            U_start=v_start, U_step=v_step, U_max=v_max,
+        )
+        if use_real_airfoil_data:
+            async with xfoil_semaphore:
+                result = await to_thread.run_sync(call)
+        else:
+            result = await to_thread.run_sync(call)
+        result.pop("history", None)  # legacy tuple form; "modes" carries it all
+        result["success"] = True
+        _count_analysis()
+        return _json_safe(result)
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"aeroelasticity_flutter: {str(e)}")
+        raise _aero_error(e, "aeroelasticity_flutter")
+    finally:
+        _cleanup_workdir(work_dir)
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# Inverse design (SU2-style Cp matching, see inverse_design.py)
+# ─────────────────────────────────────────────────────────────────────────
+
+async def _read_seed(file: Optional[UploadFile], work_dir: str):
+    """Optional seed airfoil: repaired with the same parser as the main
+    analysis. Returns coordinates or None (-> default NACA 0012)."""
+    if file is None or not file.filename:
+        return None
+    content_bytes = await file.read()
+    if len(content_bytes) > MAX_FILE_SIZE:
+        raise HTTPException(status_code=400, detail="File too large")
+    raw_path = os.path.join(work_dir, "seed_raw.dat")
+    with open(raw_path, "wb") as f:
+        f.write(content_bytes)
+    try:
+        coords, _ = parse_dat_file(raw_path)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Couldn't read the seed airfoil: {e}")
+    return coords
+
+
+def _validate_inverse_common(reynolds: float, alpha: float, ncrit: float):
+    if not INVERSE_DESIGN_AVAILABLE:
+        raise HTTPException(status_code=503, detail="Inverse design module not available on this deployment")
+    if not (MIN_REYNOLDS <= reynolds <= MAX_REYNOLDS):
+        raise HTTPException(status_code=400,
+            detail=f"Reynolds must be {MIN_REYNOLDS:,.0f} to {MAX_REYNOLDS:,.0f}")
+    if not (MIN_ALPHA <= alpha <= MAX_ALPHA):
+        raise HTTPException(status_code=400, detail=f"Alpha must be {MIN_ALPHA} to {MAX_ALPHA} degrees")
+    if not (MIN_NCRIT <= ncrit <= MAX_NCRIT):
+        raise HTTPException(status_code=400, detail=f"NCrit must be {MIN_NCRIT} to {MAX_NCRIT}")
+
+
+@app.post("/inverse_design/baseline/")
+async def inverse_design_baseline(
+    request: Request,
+    file: UploadFile = None,
+    reynolds: float = Form(500000),
+    alpha: float = Form(0.0),
+    ncrit: float = Form(9.0),
+):
+    """Seed airfoil's own Cp at the chosen condition, sampled at the curve
+    editor's points -- the starting curve the user then edits."""
+    _validate_inverse_common(reynolds, alpha, ncrit)
+    work_dir = os.path.join(TMP_DIR, f"inverse_{str(uuid.uuid4())[:8]}")
+    os.makedirs(work_dir, exist_ok=True)
+    try:
+        seed = await _read_seed(file, work_dir)
+        async with xfoil_semaphore:
+            result = await to_thread.run_sync(
+                lambda: inv_design.seed_baseline(work_dir, reynolds, alpha, seed, ncrit))
+        result["success"] = True
+        return _json_safe(result)
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"inverse_design_baseline: {e}")
         raise HTTPException(status_code=500, detail=str(e))
     finally:
+        _cleanup_workdir(work_dir)
+
+
+# Live progress of running inverse designs, keyed by a client-chosen job id.
+# Single-process server, so a plain dict is enough; old entries are pruned.
+INVERSE_PROGRESS = {}
+_JOB_ID_RE = re.compile(r"^[A-Za-z0-9_-]{8,64}$")
+
+
+def _set_inverse_progress(job_id, fraction, message):
+    now = time.time()
+    INVERSE_PROGRESS[job_id] = {"fraction": round(float(fraction), 3), "message": message, "t": now}
+    for k in [k for k, v in INVERSE_PROGRESS.items() if now - v["t"] > 600]:
+        INVERSE_PROGRESS.pop(k, None)
+
+
+@app.get("/inverse_design/progress/{job_id}")
+async def inverse_design_progress(job_id: str):
+    """Progress of a running inverse design (fraction 0..1 and the current
+    stage). Unknown / finished-and-expired ids return fraction 0."""
+    if not _JOB_ID_RE.match(job_id):
+        raise HTTPException(status_code=400, detail="Invalid job id")
+    return INVERSE_PROGRESS.get(job_id, {"fraction": 0.0, "message": "Waiting for the solver", "t": None})
+
+
+@app.post("/inverse_design/")
+async def inverse_design_endpoint(
+    request: Request,
+    file: UploadFile = None,
+    reynolds: float = Form(500000),
+    alpha: float = Form(0.0),
+    ncrit: float = Form(9.0),
+    min_thickness_percent: float = Form(0.0),
+    target_cp_upper: str = Form(...),
+    target_cp_lower: str = Form(...),
+    job_id: str = Form(""),
+):
+    """target_cp_upper/lower: JSON lists of [x/c, Cp]. file: optional seed
+    airfoil (.dat, any format the main parser accepts); none -> NACA 0012."""
+    import json as _json
+    _validate_inverse_common(reynolds, alpha, ncrit)
+    if not (0.0 <= min_thickness_percent <= 40.0):
+        raise HTTPException(status_code=400, detail="Minimum thickness must be 0 to 40 % chord")
+    try:
+        tu = _json.loads(target_cp_upper)
+        tl = _json.loads(target_cp_lower)
+        if len(tu) < 3 or len(tl) < 3 or len(tu) > 500 or len(tl) > 500:
+            raise ValueError("each surface needs 3 to 500 points")
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Invalid target curve: {e}")
+
+    track = bool(job_id) and bool(_JOB_ID_RE.match(job_id))
+    if track:
+        _set_inverse_progress(job_id, 0.0, "Waiting for the solver")
+    work_dir = os.path.join(TMP_DIR, f"inverse_{str(uuid.uuid4())[:8]}")
+    os.makedirs(work_dir, exist_ok=True)
+    logger.info(f"INVERSE DESIGN: Re={reynolds} alpha={alpha} NCrit={ncrit} "
+                f"min_t={min_thickness_percent}% seed={'upload' if file is not None and file.filename else 'NACA 0012'}")
+    try:
+        seed = await _read_seed(file, work_dir)
+        async with xfoil_semaphore:
+            result = await to_thread.run_sync(
+                lambda: inv_design.run_inverse_design(
+                    work_dir, reynolds, alpha, tu, tl, seed_coords=seed, ncrit=ncrit,
+                    min_thickness=min_thickness_percent / 100.0,
+                    progress=(lambda f, m: _set_inverse_progress(job_id, f, m)) if track else None,
+                ))
         try:
-            if os.path.exists(work_dir):
-                time.sleep(0.2)
-                shutil.rmtree(work_dir, ignore_errors=True)
-        except Exception:
-            pass
+            from db_utils import increment_analysis_count
+            increment_analysis_count()
+        except Exception as e:
+            logger.info(f"increment_analysis_count unavailable: {e}")
+        result["success"] = True
+        return _json_safe(result)
+    except HTTPException:
+        raise
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.error(f"inverse_design: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        _cleanup_workdir(work_dir)
 
 
 if __name__ == "__main__":

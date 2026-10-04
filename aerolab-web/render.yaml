@@ -1,0 +1,17 @@
+# Render Blueprint for the static React frontend.
+# Dashboard: New > Static Site (or Blueprint) > this repo.
+services:
+  - type: web
+    name: aerolab-web
+    runtime: static
+    buildCommand: npm ci && npm run build
+    staticPublishPath: ./dist
+    # Single-page app: every path serves index.html and React Router
+    # picks the page, so links like /about work on refresh.
+    routes:
+      - type: rewrite
+        source: /*
+        destination: /index.html
+    envVars:
+      - key: VITE_BACKEND_URL
+        value: https://aerolab-backend.onrender.com

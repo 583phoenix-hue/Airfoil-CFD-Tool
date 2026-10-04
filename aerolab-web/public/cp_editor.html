@@ -1,0 +1,556 @@
+<!-- cp_curve_editor_aerolab.html
+     Draggable target-Cp curve editor for AeroLab's inverse design page.
+     Follows the same %%TOKEN%% templating convention as the LBM wind
+     tunnel components (see Airfoil_Analysis.py's build_lbm_component),
+     and the Streamlit v1 component bridge protocol so the dragged curve
+     can be read back into Python via components.html(..., key=...).
+
+     NOTE ON TESTING: the core coordinate/drag math below (dataToPixel,
+     findNearestPointIndex, dragPoint, serializeCurves, etc.) was
+     extracted into curve_editor_logic.js and unit-tested with Node
+     (see test_curve_editor_logic.js) before being embedded here
+     unmodified. The canvas rendering and mouse/touch event wiring in
+     this file could NOT be tested against a real browser -- the sandbox
+     this was built in has no network access to download an actual
+     browser binary (Puppeteer was installed but blocked from fetching
+     Chrome). Test this file for real, in your actual browser, before
+     assuming it works exactly as intended -- unlike almost everything
+     else built this session, this specific file has only been reasoned
+     through carefully, not empirically verified end-to-end. -->
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap">
+<style>
+  :root {
+    --bg: #0a0d14; --bg-raised: #111623; --bg-card: #141a29;
+    --border: #212a3d; --border-strong: #2c3855;
+    --text: #eef1f7; --text-dim: #9aa4b8; --text-faint: #5c6683;
+    --upper: #00ffff; --lower: #ff8000; --accent: #00ff00; --symmetric: #b565f5;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 0; background: transparent;
+    font-family: 'Inter', sans-serif; color: var(--text-dim);
+  }
+  #wrap { padding: 4px 0; }
+  #toolbar {
+    display: flex; align-items: center; justify-content: space-between;
+    margin-bottom: 10px; flex-wrap: wrap; gap: 10px;
+  }
+  .legend { display: flex; gap: 18px; font-size: 13px; }
+  .legend-item { display: flex; align-items: center; gap: 6px; }
+  .swatch { width: 12px; height: 12px; border-radius: 3px; }
+  button.aero-btn {
+    background: var(--text); color: var(--bg); border: none;
+    border-radius: 8px; padding: 7px 14px; font-size: 13px; font-weight: 500;
+    font-family: 'Inter', sans-serif; cursor: pointer;
+  }
+  button.aero-btn:hover { background: #d5dae4; }
+  button.aero-btn.secondary {
+    background: var(--bg-card); color: var(--text-dim);
+    border: 1px solid var(--border-strong);
+  }
+  button.aero-btn.secondary:hover { background: var(--bg-raised); }
+  #hint {
+    font-size: 12px; color: var(--text-faint); margin-top: 8px;
+  }
+  canvas { display: block; border-radius: 10px; touch-action: none; }
+  #canvas-container {
+    background: var(--bg-card); border: 1px solid var(--border);
+    border-radius: 10px; padding: 12px;
+  }
+</style>
+</head>
+<body>
+<div id="wrap">
+  <div id="toolbar">
+    <div class="legend">
+      <div class="legend-item"><span class="swatch" style="background:var(--upper)"></span>Upper surface</div>
+      <div class="legend-item"><span class="swatch" style="background:var(--lower)"></span>Lower surface</div>
+    </div>
+    <div style="display:flex; gap:14px; align-items:center;">
+      <label style="display:flex; align-items:center; gap:6px; font-size:13px; color:var(--text-dim); cursor:pointer;">
+        <input type="checkbox" id="symmetricCheckbox" style="cursor:pointer;">
+        Symmetrical
+      </label>
+      <button class="aero-btn secondary" id="resetBtn">Reset curve</button>
+    </div>
+  </div>
+  <div id="canvas-container">
+    <canvas id="cpCanvas"></canvas>
+  </div>
+  <div id="hint">Drag a point up or down to change the target pressure coefficient (Cp) at that position. Release to update. Suction (negative Cp) points up, matching the Cp plots elsewhere in AeroLab. The <strong>ringed points</strong> at the leading and trailing edge are shared between both surfaces (they're the same physical point) — dragging one moves both. Check <strong>Symmetrical</strong> to link every point (shown in purple) for a zero-camber design, without needing to match each side by hand. The curve starts from the seed airfoil's own pressure distribution at the chosen Reynolds number and angle of attack; <strong>Reset curve</strong> goes back to it.</div>
+</div>
+
+<script>
+// ── Tiny, dependency-free Streamlit v1 component bridge ────────────────
+// (no CDN needed -- see https://discuss.streamlit.io/t/13064 for the
+// original minimal implementation this is based on)
+function sendMessageToStreamlitClient(type, data) {
+  const outData = Object.assign({ isStreamlitMessage: true, type: type }, data);
+  window.parent.postMessage(outData, "*");
+}
+const Streamlit = {
+  setComponentReady: function() {
+    sendMessageToStreamlitClient("streamlit:componentReady", { apiVersion: 1 });
+  },
+  setFrameHeight: function(height) {
+    sendMessageToStreamlitClient("streamlit:setFrameHeight", { height: height });
+  },
+  setComponentValue: function(value) {
+    sendMessageToStreamlitClient("streamlit:setComponentValue", { value: value });
+  },
+};
+</script>
+
+<script>
+// ── Pure logic (unit-tested with Node -- see test_curve_editor_logic.js) ──
+// Embedded verbatim; the `if (typeof module...)` guard below is a no-op
+// in the browser.
+
+function dataToPixel(dataX, dataY, bounds) {
+  const px = bounds.left + ((dataX - bounds.xMin) / (bounds.xMax - bounds.xMin)) * bounds.width;
+  const py = bounds.top + ((dataY - bounds.yMin) / (bounds.yMax - bounds.yMin)) * bounds.height;
+  return [px, py];
+}
+
+function pixelToDataY(pixelY, bounds) {
+  const t = (pixelY - bounds.top) / bounds.height;
+  return bounds.yMin + t * (bounds.yMax - bounds.yMin);
+}
+
+function clamp(v, lo, hi) {
+  return Math.max(lo, Math.min(hi, v));
+}
+
+function findNearestPointIndex(points, pixelX, pixelY, bounds, maxDistPx) {
+  let bestIdx = -1;
+  let bestDist = Infinity;
+  for (let i = 0; i < points.length; i++) {
+    const [px, py] = dataToPixel(points[i].x, points[i].cp, bounds);
+    const d = Math.hypot(px - pixelX, py - pixelY);
+    if (d < bestDist) {
+      bestDist = d;
+      bestIdx = i;
+    }
+  }
+  if (bestDist <= maxDistPx) {
+    return bestIdx;
+  }
+  return -1;
+}
+
+function dragPoint(points, index, newPixelY, bounds, yMin, yMax) {
+  const newCp = clamp(pixelToDataY(newPixelY, bounds), yMin, yMax);
+  return points.map((p, i) => (i === index ? { x: p.x, cp: newCp } : p));
+}
+
+function serializeCurves(upperPoints, lowerPoints) {
+  return {
+    target_cp_upper: upperPoints.map((p) => [round4(p.x), round4(p.cp)]),
+    target_cp_lower: lowerPoints.map((p) => [round4(p.x), round4(p.cp)]),
+  };
+}
+
+function round4(v) {
+  return Math.round(v * 10000) / 10000;
+}
+
+// Real NACA 0012 baseline Cp at Re=500k, alpha=0, sampled at 21 points
+// from an ACTUAL converged XFOIL forward analysis. See
+// curve_editor_logic.js for the full explanation of why this replaced an
+// earlier hand-guessed formula that caused a real, confirmed bug
+// (miscalibrated lower-surface baseline sign led to reversed lift even
+// on the unmodified default curve).
+//
+// UPDATED AGAIN: the 21-point uniform table above this comment was
+// ALSO found wrong via a real end-to-end test -- feeding it back as its
+// own zero-deviation target produced a 22%+ thick result instead of the
+// true 12.0%. Root cause: 21 uniform points can't resolve the true
+// curve's rapid change near the leading edge (Cp: +1 to -0.4 within
+// ~5% chord). A naive "resample more finely between the same 21 points"
+// fix did NOT help (still 17.2%) -- resampling a piecewise-linear
+// approximation more densely adds no real curvature information. Fixed
+// with 41 points, COSINE-spaced (concentrated at the LE/TE). See
+// curve_editor_logic.js for the full story -- re-verify against a real
+// XFOIL run before ever changing this table again.
+const UPPER_BASELINE_CP = [
+  0.9942, 0.7293, 0.2619, -0.0522, -0.2256, -0.3202, -0.3714, -0.3986,
+  -0.4114, -0.4141, -0.4101, -0.4013, -0.3885, -0.3726, -0.3545, -0.3346,
+  -0.3136, -0.2918, -0.2697, -0.2477, -0.2260, -0.2049, -0.1848, -0.1660,
+  -0.1487, -0.1333, -0.1197, -0.1080, -0.0909, -0.0313, 0.0083, 0.0304,
+  0.0507, 0.0731, 0.0975, 0.1236, 0.1506, 0.1770, 0.1979, 0.2109, 0.2151,
+];
+const LOWER_BASELINE_CP = [
+  0.9944, 0.7300, 0.2619, -0.0512, -0.2262, -0.3203, -0.3713, -0.3989,
+  -0.4112, -0.4141, -0.4102, -0.4011, -0.3885, -0.3726, -0.3544, -0.3346,
+  -0.3136, -0.2918, -0.2698, -0.2477, -0.2260, -0.2050, -0.1848, -0.1660,
+  -0.1487, -0.1333, -0.1197, -0.1080, -0.0910, -0.0314, 0.0081, 0.0304,
+  0.0507, 0.0730, 0.0975, 0.1236, 0.1506, 0.1770, 0.1979, 0.2109, 0.2151,
+];
+
+function makeDefaultCurve(n, isUpper) {
+  const table = isUpper ? UPPER_BASELINE_CP : LOWER_BASELINE_CP;
+  const points = [];
+  for (let i = 0; i <= n; i++) {
+    const x = (1 - Math.cos((Math.PI * i) / n)) / 2;
+    const baseIdx = Math.min(table.length - 1, Math.round((i / n) * (table.length - 1)));
+    const baseCp = table[baseIdx];
+    const bias = isUpper ? -0.05 * 4 * x * (1 - x) : 0.0;
+    const cp = baseCp + bias;
+    points.push({ x: round4(x), cp: round4(clamp(cp, -2.0, 1.0)) });
+  }
+  return points;
+}
+
+function computeApproxCL(upperPoints, lowerPoints) {
+  // Rough, instant, client-side estimate only -- see curve_editor_logic.js
+  // for the full explanation of why this won't exactly match the
+  // backend's target_cl or the final verified CL.
+  let cn = 0;
+  for (let i = 1; i < upperPoints.length; i++) {
+    const dx = upperPoints[i].x - upperPoints[i - 1].x;
+    const dcpPrev = lowerPoints[i - 1].cp - upperPoints[i - 1].cp;
+    const dcpCurr = lowerPoints[i].cp - upperPoints[i].cp;
+    cn += 0.5 * (dcpPrev + dcpCurr) * dx;
+  }
+  return cn;
+}
+
+function syncSharedEndpoints(upperPoints, lowerPoints, draggedSurface, draggedIndex) {
+  // The leading edge (index 0) and trailing edge (last index) are the
+  // SAME PHYSICAL POINT where the upper and lower surfaces meet -- a
+  // real airfoil cannot have two different pressures at one point in
+  // space. Whichever surface was just dragged is the source of truth
+  // for that shared value; the other surface's matching endpoint is
+  // updated to equal it. Interior points are independent and untouched.
+  const lastIdx = upperPoints.length - 1;
+  if (draggedIndex !== 0 && draggedIndex !== lastIdx) {
+    return [upperPoints, lowerPoints];
+  }
+  if (draggedSurface === "upper") {
+    const sharedCp = upperPoints[draggedIndex].cp;
+    const newLower = lowerPoints.map((p, i) => (i === draggedIndex ? { x: p.x, cp: sharedCp } : p));
+    return [upperPoints, newLower];
+  } else {
+    const sharedCp = lowerPoints[draggedIndex].cp;
+    const newUpper = upperPoints.map((p, i) => (i === draggedIndex ? { x: p.x, cp: sharedCp } : p));
+    return [newUpper, lowerPoints];
+  }
+}
+
+function syncSymmetric(upperPoints, lowerPoints, draggedSurface, draggedIndex) {
+  // Symmetric-mode version of syncSharedEndpoints: links EVERY index,
+  // not just the LE/TE -- dragging either surface at a given position
+  // sets both surfaces to the same Cp there, guaranteeing a zero-camber
+  // target by construction. Used INSTEAD of syncSharedEndpoints while
+  // symmetric mode is on (index 0/last are already covered here).
+  if (draggedSurface === "upper") {
+    const cp = upperPoints[draggedIndex].cp;
+    const newLower = lowerPoints.map((p, i) => (i === draggedIndex ? { x: p.x, cp: cp } : p));
+    return [upperPoints, newLower];
+  } else {
+    const cp = lowerPoints[draggedIndex].cp;
+    const newUpper = upperPoints.map((p, i) => (i === draggedIndex ? { x: p.x, cp: cp } : p));
+    return [newUpper, lowerPoints];
+  }
+}
+
+function makeSymmetric(upperPoints, lowerPoints) {
+  // Called once, the moment symmetric mode is turned ON: averages the
+  // two current curves into a single shared shape, rather than
+  // arbitrarily snapping to whichever surface happened to be dragged last.
+  const averaged = upperPoints.map((p, i) => ({
+    x: p.x,
+    cp: round4((p.cp + lowerPoints[i].cp) / 2),
+  }));
+  return [averaged, averaged.map((p) => ({ x: p.x, cp: p.cp }))];
+}
+
+if (typeof module !== "undefined") {
+  module.exports = {
+    dataToPixel, pixelToDataY, clamp, findNearestPointIndex,
+    dragPoint, serializeCurves, round4, makeDefaultCurve, computeApproxCL,
+    syncSharedEndpoints, syncSymmetric, makeSymmetric,
+  };
+}
+</script>
+
+<script>
+// ── Rendering + interaction (not testable without a real browser --
+//    see the file-level comment above) ─────────────────────────────────
+
+const N_POINTS = 40; // 41 control points per surface -- increased from 20
+                      // after a real bug was found and fixed: 21 uniformly-
+                      // spaced points were too sparse to resolve the true
+                      // curve's rapid change near the leading edge, causing
+                      // even the "unmodified default" to produce a wrong,
+                      // overly-thick design. See curve_editor_logic.js's
+                      // makeDefaultCurve comments for the full story. Still
+                      // comfortably under MODIFY_FILE's NUX=100 buffer limit.
+let Y_MIN = -2.0; const Y_MAX = 1.5;  // Y_MIN widens for seeds with a stronger suction peak
+const POINT_RADIUS = 6;
+const HIT_RADIUS = 16;
+
+let upperPoints = makeDefaultCurve(N_POINTS, true);
+let lowerPoints = makeDefaultCurve(N_POINTS, false);
+
+// Seed baseline sent from Python (args.baseline = {key, x, upper, lower}):
+// the seed airfoil's own Cp at the chosen Re/alpha. When its key changes
+// (new seed, alpha or Re) the curve is reset to it, so the user edits
+// relative to the airfoil they started from. Reset returns to it too.
+let baseline = null;
+let baselineKey = null;
+
+function curvesFromBaseline(b) {
+  const up = b.x.map((x, i) => ({ x: round4(x), cp: round4(Math.min(1.0, b.upper[i])) }));
+  const lo = b.x.map((x, i) => ({ x: round4(x), cp: round4(Math.min(1.0, b.lower[i])) }));
+  return [up, lo];
+}
+
+function applyBaseline(b) {
+  baseline = b;
+  const lowest = Math.min(...b.upper, ...b.lower);
+  Y_MIN = Math.min(-2.0, Math.floor(lowest * 2) / 2 - 0.5);
+  [upperPoints, lowerPoints] = curvesFromBaseline(b);
+  if (symmetricMode) {
+    [upperPoints, lowerPoints] = makeSymmetric(upperPoints, lowerPoints);
+  }
+  draw();
+  sendCurrentValue();
+}
+
+window.addEventListener("message", function (evt) {
+  const d = evt.data;
+  if (!d || d.type !== "streamlit:render") return;
+  const b = d.args && d.args.baseline;
+  if (b && b.key !== baselineKey && b.x && b.x.length === N_POINTS + 1) {
+    baselineKey = b.key;
+    applyBaseline(b);
+  }
+});
+
+let dragging = null; // { surface: 'upper'|'lower', index: number } or null
+let symmetricMode = false;
+
+const canvas = document.getElementById("cpCanvas");
+const ctx = canvas.getContext("2d");
+
+function getBounds() {
+  const width = canvas.clientWidth;
+  const height = canvas.clientHeight;
+  const margin = { left: 46, right: 16, top: 16, bottom: 30 };
+  return {
+    left: margin.left,
+    top: margin.top,
+    width: width - margin.left - margin.right,
+    height: height - margin.top - margin.bottom,
+    xMin: 0, xMax: 1, yMin: Y_MIN, yMax: Y_MAX,
+  };
+}
+
+function resizeCanvas() {
+  const dpr = window.devicePixelRatio || 1;
+  const cssWidth = canvas.parentElement.clientWidth - 24; // minus container padding
+  const cssHeight = 340;
+  canvas.style.width = cssWidth + "px";
+  canvas.style.height = cssHeight + "px";
+  canvas.width = Math.round(cssWidth * dpr);
+  canvas.height = Math.round(cssHeight * dpr);
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  draw();
+}
+
+function draw() {
+  const bounds = getBounds();
+  const w = canvas.clientWidth, h = canvas.clientHeight;
+  ctx.clearRect(0, 0, w, h);
+
+  // gridlines
+  ctx.strokeStyle = "#212a3d";
+  ctx.lineWidth = 1;
+  ctx.font = "11px 'JetBrains Mono', monospace";
+  ctx.fillStyle = "#5c6683";
+
+  for (let xg = 0; xg <= 1.0001; xg += 0.25) {
+    const [px] = dataToPixel(xg, 0, bounds);
+    ctx.beginPath();
+    ctx.moveTo(px, bounds.top);
+    ctx.lineTo(px, bounds.top + bounds.height);
+    ctx.stroke();
+    ctx.fillText(xg.toFixed(2), px - 10, bounds.top + bounds.height + 18);
+  }
+  for (let yg = Math.ceil(Y_MIN); yg <= Y_MAX; yg += 0.5) {
+    const [, py] = dataToPixel(0, yg, bounds);
+    ctx.beginPath();
+    ctx.moveTo(bounds.left, py);
+    ctx.lineTo(bounds.left + bounds.width, py);
+    ctx.stroke();
+    ctx.fillText(yg.toFixed(1), 6, py + 4);
+  }
+
+  // zero line, emphasized
+  const [, zeroY] = dataToPixel(0, 0, bounds);
+  ctx.strokeStyle = "#2c3855";
+  ctx.lineWidth = 1.5;
+  ctx.beginPath();
+  ctx.moveTo(bounds.left, zeroY);
+  ctx.lineTo(bounds.left + bounds.width, zeroY);
+  ctx.stroke();
+
+  ctx.fillStyle = "#9aa4b8";
+  ctx.font = "12px Inter, sans-serif";
+  ctx.fillText("x / c", bounds.left + bounds.width / 2 - 12, bounds.top + bounds.height + 30);
+  ctx.save();
+  ctx.translate(14, bounds.top + bounds.height / 2 + 14);
+  ctx.rotate(-Math.PI / 2);
+  ctx.fillText("Cp", 0, 0);
+  ctx.restore();
+
+  if (symmetricMode) {
+    drawCurve(upperPoints, "#b565f5", bounds);
+    drawCurve(lowerPoints, "#b565f5", bounds);
+  } else {
+    drawCurve(upperPoints, "#00ffff", bounds);
+    drawCurve(lowerPoints, "#ff8000", bounds);
+  }
+}
+
+function drawCurve(points, color, bounds) {
+  ctx.strokeStyle = color;
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  points.forEach((p, i) => {
+    const [px, py] = dataToPixel(p.x, p.cp, bounds);
+    if (i === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
+  });
+  ctx.stroke();
+
+  const lastIdx = points.length - 1;
+  ctx.fillStyle = color;
+  points.forEach((p, i) => {
+    const [px, py] = dataToPixel(p.x, p.cp, bounds);
+    ctx.beginPath();
+    ctx.arc(px, py, POINT_RADIUS, 0, Math.PI * 2);
+    ctx.fill();
+    if (i === 0 || i === lastIdx) {
+      // shared LE/TE point -- ring it to show it's linked to the other surface
+      ctx.strokeStyle = "#eef1f7";
+      ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      ctx.arc(px, py, POINT_RADIUS + 3, 0, Math.PI * 2);
+      ctx.stroke();
+    }
+  });
+}
+
+function getEventPos(evt) {
+  const rect = canvas.getBoundingClientRect();
+  const point = evt.touches ? evt.touches[0] : evt;
+  return { x: point.clientX - rect.left, y: point.clientY - rect.top };
+}
+
+function pointerDown(evt) {
+  const pos = getEventPos(evt);
+  const bounds = getBounds();
+
+  const upperIdx = findNearestPointIndex(upperPoints, pos.x, pos.y, bounds, HIT_RADIUS);
+  const lowerIdx = findNearestPointIndex(lowerPoints, pos.x, pos.y, bounds, HIT_RADIUS);
+
+  if (upperIdx === -1 && lowerIdx === -1) return;
+
+  // if both are within range, pick whichever is actually closer
+  if (upperIdx !== -1 && lowerIdx !== -1) {
+    const [upx, upy] = dataToPixel(upperPoints[upperIdx].x, upperPoints[upperIdx].cp, bounds);
+    const [lpx, lpy] = dataToPixel(lowerPoints[lowerIdx].x, lowerPoints[lowerIdx].cp, bounds);
+    const du = Math.hypot(upx - pos.x, upy - pos.y);
+    const dl = Math.hypot(lpx - pos.x, lpy - pos.y);
+    dragging = du <= dl ? { surface: "upper", index: upperIdx } : { surface: "lower", index: lowerIdx };
+  } else if (upperIdx !== -1) {
+    dragging = { surface: "upper", index: upperIdx };
+  } else {
+    dragging = { surface: "lower", index: lowerIdx };
+  }
+  evt.preventDefault();
+}
+
+function pointerMove(evt) {
+  if (!dragging) return;
+  const pos = getEventPos(evt);
+  const bounds = getBounds();
+  if (dragging.surface === "upper") {
+    upperPoints = dragPoint(upperPoints, dragging.index, pos.y, bounds, Y_MIN, Y_MAX);
+  } else {
+    lowerPoints = dragPoint(lowerPoints, dragging.index, pos.y, bounds, Y_MIN, Y_MAX);
+  }
+  if (symmetricMode) {
+    [upperPoints, lowerPoints] = syncSymmetric(upperPoints, lowerPoints, dragging.surface, dragging.index);
+  } else {
+    [upperPoints, lowerPoints] = syncSharedEndpoints(upperPoints, lowerPoints, dragging.surface, dragging.index);
+  }
+  draw();
+  evt.preventDefault();
+}
+
+let debounceTimer = null;
+const DEBOUNCE_MS = 700; // deliberate delay before triggering the (slower,
+                          // accurate) backend CL estimate -- the instant
+                          // client-side estimate above is unaffected by
+                          // this and keeps updating live during the drag
+                          // itself; this only debounces the "send to
+                          // Python, trigger a backend call" step.
+
+function pointerUp(evt) {
+  if (!dragging) return;
+  dragging = null;
+  if (debounceTimer) clearTimeout(debounceTimer);
+  debounceTimer = setTimeout(sendCurrentValue, DEBOUNCE_MS);
+}
+
+function sendCurrentValue() {
+  Streamlit.setComponentValue(serializeCurves(upperPoints, lowerPoints));
+}
+
+canvas.addEventListener("mousedown", pointerDown);
+window.addEventListener("mousemove", pointerMove);
+window.addEventListener("mouseup", pointerUp);
+canvas.addEventListener("touchstart", pointerDown, { passive: false });
+window.addEventListener("touchmove", pointerMove, { passive: false });
+window.addEventListener("touchend", pointerUp);
+
+document.getElementById("resetBtn").addEventListener("click", function () {
+  if (baseline) {
+    applyBaseline(baseline);
+    return;
+  }
+  upperPoints = makeDefaultCurve(N_POINTS, true);
+  lowerPoints = makeDefaultCurve(N_POINTS, false);
+  draw();
+  sendCurrentValue();
+});
+
+document.getElementById("symmetricCheckbox").addEventListener("change", function (evt) {
+  symmetricMode = evt.target.checked;
+  if (symmetricMode) {
+    // Snap the two current curves together the moment the box is
+    // checked, so dragging afterward starts from a genuinely symmetric
+    // shape rather than silently keeping whatever asymmetry existed
+    // before -- averages rather than favoring either surface.
+    [upperPoints, lowerPoints] = makeSymmetric(upperPoints, lowerPoints);
+  }
+  draw();
+  sendCurrentValue();
+});
+
+window.addEventListener("resize", resizeCanvas);
+
+// ── Init ─────────────────────────────────────────────────────────────
+resizeCanvas();
+Streamlit.setComponentReady();
+Streamlit.setFrameHeight(430);
+sendCurrentValue(); // ensure Python has a valid default before any drag
+</script>
+</body>
+</html>
