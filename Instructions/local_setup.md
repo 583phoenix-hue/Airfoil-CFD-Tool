@@ -7,7 +7,7 @@ Install these first:
 - **Python 3.11** (with pip)
 - **Node.js 18 or newer** (includes npm)
 - **Git**
-- **XFOIL 6.99 for Windows**: download it from the [XFOIL website](https://web.mit.edu/drela/Public/web/xfoil/) and put `xfoil.exe` in the project folder, next to `main.py`. It is ignored by Git, so it is never committed.
+- **XFOIL for Windows** (only needed if you run the backend; every module runs XFOIL in the browser, so the frontend alone works): download it from the [XFOIL website](https://web.mit.edu/drela/Public/web/xfoil/) and put `xfoil.exe` in the project folder, next to `main.py`. It is ignored by Git, so it is never committed. That download is XFOIL 6.99; the live site uses 6.996 (built from `third_party/xfoil/`), so local backend results can differ slightly at higher angles of attack.
 
 ---
 
@@ -115,7 +115,8 @@ Airfoil-CFD-Tool/
 ├── flutter_vg.py            # Aeroelasticity: V-g flutter analysis
 ├── db_utils.py              # PostgreSQL analysis counter
 ├── requirements.txt         # Python dependencies
-├── Dockerfile.backend       # Backend image (XFOIL + uvicorn)
+├── Dockerfile.backend       # Backend image (builds XFOIL 6.996, runs uvicorn)
+├── third_party/xfoil/       # XFOIL 6.996 source + build script (GPL)
 ├── Dockerfile.frontend      # Frontend image (React build + nginx)
 ├── test_main.py             # Parser and XFOIL output tests
 ├── aerolab-web/             # React frontend
@@ -126,6 +127,7 @@ Airfoil-CFD-Tool/
 │   └── public/
 │       ├── lbm/             # Wind tunnel (single and side-by-side)
 │       ├── examples/        # Bundled example airfoils
+│       ├── xfoil/           # XFOIL 6.996 compiled to WebAssembly (runs analyses in the browser)
 │       └── cp_editor.html   # Interactive Cp curve editor
 ├── app.py, pages/           # Previous Streamlit frontend (no longer deployed)
 └── Instructions/

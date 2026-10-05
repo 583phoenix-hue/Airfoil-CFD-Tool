@@ -4,7 +4,7 @@
 [![License: AGPL v3](https://img.shields.io/badge/License-AGPL_v3-blue.svg)](LICENSE)
 [![DOI](https://zenodo.org/badge/doi/10.5281/zenodo.20740325.svg)](https://doi.org/10.5281/zenodo.20740325)
 
-AeroLab is a free, browser-based aerodynamics toolkit built on the industry-standard [XFOIL](https://web.mit.edu/drela/Public/web/xfoil/) panel method solver. Students, researchers and aerospace enthusiasts can analyse 2D airfoil sections and estimate aeroelastic limits (divergence, control reversal, flutter), all without installing any software.
+AeroLab is a free, browser-based aerodynamics toolkit built on the industry-standard [XFOIL](https://web.mit.edu/drela/Public/web/xfoil/) panel method solver. Students, researchers and aerospace enthusiasts can analyse 2D airfoil sections, design airfoils from a target pressure distribution and estimate aeroelastic limits (divergence, control reversal, flutter), all without installing any software.
 
 **Live tool:** https://aerolab-app.onrender.com/
 
@@ -17,6 +17,7 @@ AeroLab is a free, browser-based aerodynamics toolkit built on the industry-stan
 - **Results**: lift (CL), drag (CD), pitching moment (Cm), pressure distribution (Cp), boundary-layer data and transition points
 - **Controls**: Reynolds number, Mach number, NCrit (turbulence level), viscous or inviscid mode
 - **Robust `.dat` file parser**: handles Selig and Lednicer formats, corrects winding order, removes duplicate leading/trailing edge points, and fixes common formatting errors that make stock XFOIL reject files
+- **Runs in your browser**: XFOIL 6.996 compiled to WebAssembly does the analysis on your own device, so results come back in about a second with no server queue (the server is used only if a browser can't run it)
 - **Three-strategy solver**: viscous → viscous with geometry smoothing → inviscid fallback, so difficult geometries still return a result
 - **Exports**: CSV tables, boundary-layer CSV, and publication-style polar PNGs
 - **Built-in example airfoils**: NACA 0012, NACA 4412, Clark Y, Eppler 387, Selig S1223
@@ -27,18 +28,18 @@ AeroLab is a free, browser-based aerodynamics toolkit built on the industry-stan
 - Live angle-of-attack and Reynolds-number control, showing the Reynolds number actually simulated
 - Smoke and particle-trail visualisation, stall indicator, PNG export, and a side-by-side tunnel in compare mode
 
-### Inverse Design (coming soon)
-Temporarily unavailable on the live site while it is moved to run in the browser.
-
+### Inverse Design
 - Design an airfoil that produces a target pressure distribution (Cp), using SU2-style Cp matching driven by XFOIL
 - Draw the target in an interactive Cp curve editor, or upload a Cp file
 - Start from a seed airfoil (NACA 0012 by default, or your own) with a minimum-thickness constraint
-- Live progress bar, with the final design checked by a viscous XFOIL run
+- Live progress bar and a Cancel button, with the final design checked by a viscous XFOIL run
+- Runs entirely in your browser (the optimiser in a Web Worker, XFOIL as WebAssembly), so one student's design never slows anyone else down
 
 ### Aeroelasticity
 - **Static divergence**: divergence speed from a viscous XFOIL lift curve, compared with the linear estimate
 - **Control reversal**: aileron reversal speed, with flap effectiveness from XFOIL or thin-airfoil theory
 - **Flutter**: V-g analysis with Theodorsen unsteady aerodynamics
+- All three run in your browser, with the XFOIL polars computed by the WebAssembly build
 
 ---
 
@@ -47,11 +48,12 @@ Temporarily unavailable on the live site while it is moved to run in the browser
 | Component | Technology |
 |---|---|
 | Frontend | React + Vite (`aerolab-web/`), served by nginx |
-| Backend | FastAPI + XFOIL (`main.py`) |
+| Analysis, aeroelasticity, inverse design | XFOIL 6.996 compiled to WebAssembly plus JavaScript ports of the solvers, run in the browser (`aerolab-web/src/lib/xfoil/`, `lib/aero/`, `lib/inverse/`) |
+| Backend | FastAPI + XFOIL 6.996 (`main.py`, built from `third_party/xfoil/`): the analysis counter, and a fallback for every module in browsers without WebAssembly |
 | Database | PostgreSQL (analysis counter) |
 | Deployment | Render: frontend and backend as Docker services |
 
-The wind tunnel runs entirely in the visitor's browser (WebGL). All XFOIL work happens on the backend.
+The wind tunnel (WebGL) and all XFOIL-based modules (WebAssembly) run in the visitor's browser. The backend and the browser use the same XFOIL version, so they give the same results.
 
 The previous Streamlit frontend (`app.py`, `pages/`) is kept in the repository for reference but is no longer deployed.
 
@@ -66,8 +68,8 @@ Step-by-step Windows instructions are in [Instructions/local_setup.md](Instructi
 - Python 3.11+
 - Node.js 18+
 - XFOIL 6.99:
-  - Debian/Ubuntu: `sudo apt install xfoil`. The packaged build crashes on a harmless floating-point trap when graphics are off; `Dockerfile.backend` shows the one-line workaround, or run the backend with Docker
-  - Windows: place `xfoil.exe` next to `main.py`, or set `XFOIL_PATH`
+  - Linux/macOS: build XFOIL 6.996 from the bundled source with `sh third_party/xfoil/build.sh` (needs gfortran), then set `XFOIL_PATH` to `third_party/xfoil/xfoil`
+  - Windows: place `xfoil.exe` next to `main.py`, or set `XFOIL_PATH`. MIT's Windows download is XFOIL 6.99, which differs slightly from the 6.996 the site uses (mainly at higher angles of attack); use WSL or Docker for identical results
 - PostgreSQL (optional; only needed for the analysis counter)
 
 ### Backend
@@ -107,7 +109,7 @@ The site runs at `http://localhost:5173`. Without `.env.local` it uses the live 
 ### Docker
 
 ```bash
-# Backend (includes XFOIL)
+# Backend (builds XFOIL 6.996 from third_party/xfoil)
 docker build -f Dockerfile.backend -t aerolab-backend .
 docker run -p 8000:8000 -e DATABASE_URL=... aerolab-backend
 
@@ -134,7 +136,7 @@ Tests cover the `.dat` file parser (Selig/Lednicer detection, winding order corr
 ## Usage
 
 1. Visit the [live tool](https://aerolab-app.onrender.com/) or run it locally
-2. Choose a module: **Airfoil Analysis** or **Aeroelasticity** (Inverse Design is coming soon)
+2. Choose a module: **Airfoil Analysis**, **Inverse Design** or **Aeroelasticity**
 3. Pick a built-in example airfoil, or upload a `.dat` file from a database such as the [UIUC Airfoil Coordinate Database](https://m-selig.ae.illinois.edu/ads/coord_database.html) or [Airfoil Tools](http://airfoiltools.com/). The parser fixes malformed files automatically
 4. Set the flow conditions (Reynolds number, angle of attack or sweep range, and so on)
 5. Run the analysis, view the charts, and download the results

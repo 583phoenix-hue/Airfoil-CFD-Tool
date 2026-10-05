@@ -9,6 +9,8 @@ import {
 } from "../components/ui.jsx";
 import Plot, { chartLayout, hline } from "../lib/Plot.jsx";
 import { postForm } from "../lib/http.js";
+import { localXfoilSupported, warmUpXfoil } from "../lib/xfoil/xfoilClient.js";
+import { XfoilUnavailable, runBaselineLocal, startDesignLocal } from "../lib/inverse/inverseClient.js";
 import { downloadText, readFileText } from "../lib/files.js";
 import { CpFileError, curveTargetCl, curveToDat, interp, parseCpFile, resampleForEditor } from "../lib/cpParser.js";
 import { useBackendStatus } from "../useBackendStatus.js";
@@ -191,14 +193,18 @@ export default function InverseDesign() {
   // The design that's running, so it can be stopped: leaving the page,
   // closing the tab or pressing Cancel tells the server to stop it (it would
   // otherwise keep running and slow every other request down).
-  const activeJob = useRef(null); // { jobId, ctrl }
+  const activeJob = useRef(null); // { jobId, ctrl } (server) or { local: cancelFn, ctrl }
   const cancelJob = () => {
     const job = activeJob.current;
     if (!job) return;
     activeJob.current = null;
+    if (job.local) { job.ctrl.abort(); job.local(); return; } // in-browser: stop the worker
     try { navigator.sendBeacon(`${BACKEND_URL}/inverse_design/cancel/${job.jobId}`); } catch { /* ignore */ }
     job.ctrl.abort();
   };
+  // XFOIL runs in the browser; the server is only a fallback.
+  const [localOk, setLocalOk] = useState(localXfoilSupported());
+  useEffect(() => { warmUpXfoil().then((ok) => setLocalOk(ok && localXfoilSupported())); }, []);
   useEffect(() => {
     window.addEventListener("pagehide", cancelJob);
     return () => { window.removeEventListener("pagehide", cancelJob); cancelJob(); };
@@ -223,8 +229,19 @@ export default function InverseDesign() {
     setBaselineState("loading");
     const t = setTimeout(async () => {
       try {
-        const b = await postForm("/inverse_design/baseline/", { reynolds, alpha, ncrit },
-          { file: seed ? { name: seed.name, content: seed.content } : null, timeoutMs: 90000, retries: 0 });
+        const seedFile = seed ? { name: seed.name, content: seed.content } : null;
+        let b = null;
+        if (localXfoilSupported()) {
+          try {
+            b = await runBaselineLocal({ reynolds, alpha, ncrit, seedFile });
+          } catch (e) {
+            if (!(e instanceof XfoilUnavailable)) throw e;
+          }
+        }
+        if (!b) {
+          b = await postForm("/inverse_design/baseline/", { reynolds, alpha, ncrit },
+            { file: seedFile, timeoutMs: 90000, retries: 0 });
+        }
         baselineCache.set(key, b);
         if (id === reqId.current) apply(b);
       } catch (e) {
@@ -284,7 +301,32 @@ export default function InverseDesign() {
     if (!targetUpper) { setError("⚠️ No target yet: draw one or upload a Cp file first."); return; }
     setRunning(true);
     setError(null);
-    setProgress({ fraction: 0, message: "Sending the design to the solver" });
+    setProgress({ fraction: 0, message: localOk ? "Starting the design in your browser" : "Sending the design to the solver" });
+    if (localXfoilSupported()) {
+      const ctrl = new AbortController();
+      let fallBack = false;
+      try {
+        const job = startDesignLocal({
+          reynolds, alpha, ncrit, minThicknessPercent: minThickness, targetUpper, targetLower,
+          seedFile: seed ? { name: seed.name, content: seed.content } : null,
+        }, (fraction, message) => setProgress((prev) => ({ fraction: Math.max(prev?.fraction || 0, fraction), message })));
+        activeJob.current = { local: job.cancel, ctrl };
+        const r = await job.promise;
+        fetch(`${BACKEND_URL}/analysis_count/increment`, { method: "POST", keepalive: true }).catch(() => {});
+        setResult(r);
+        setResultKey(settingsKey);
+      } catch (e) {
+        if (e instanceof XfoilUnavailable) fallBack = true; // XFOIL couldn't load here: use the server below
+        else {
+          setError(ctrl.signal.aborted ? "⏹️ Design cancelled." : `❌ ${e.message}`);
+          if (!ctrl.signal.aborted) setResult(null);
+        }
+      } finally {
+        if (activeJob.current?.ctrl === ctrl) activeJob.current = null;
+        if (!fallBack) { setRunning(false); setProgress(undefined); }
+      }
+      if (!fallBack) return;
+    }
     // The server reports its real stage for this job id; poll it while the
     // design runs. If the server is too old to report progress, fall back to
     // the time-based bar.
@@ -348,7 +390,7 @@ export default function InverseDesign() {
           <NumberField label="Minimum thickness (% chord)" value={minThickness} min={0} max={40} step={0.5}
             onChange={setMinThickness}
             help="Keeps the design at least this thick (e.g. for a spar). 0 = only stop the surfaces from crossing." />
-          <button className="btn btn-block" onClick={generate} disabled={running || status === "unavailable"}>
+          <button className="btn btn-block" onClick={generate} disabled={running || (!localOk && status === "unavailable")}>
             {running ? "Designing…" : "🚀 Generate airfoil"}
           </button>
           <div className="card help-card">
@@ -362,7 +404,7 @@ export default function InverseDesign() {
         <main className="tool-main">
           <h1 className="tool-h1">🎨 Target pressure distribution</h1>
           <p className="tool-sub">Draw it or upload it, then generate an airfoil that produces it</p>
-          <StatusBanner status={status} />
+          {!localOk && <StatusBanner status={status} />}
 
           <div className="card stack" style={{ marginTop: 16 }}>
             <Segmented value={source} onChange={setSource} ariaLabel="Target source"

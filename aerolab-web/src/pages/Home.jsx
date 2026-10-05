@@ -4,6 +4,7 @@ import { Logo, CmapBar, Footer } from "../components/Layout.jsx";
 import { useBackendStatus } from "../useBackendStatus.js";
 import { getAnalysisCount } from "../api.js";
 import { COLORS } from "../config.js";
+import { localXfoilSupported } from "../lib/xfoil/xfoilClient.js";
 
 const FEATURES = [
   ["🎯", "Accurate analysis", "Industry-standard XFOIL panel method for precise aerodynamic predictions.", COLORS.c2],
@@ -36,7 +37,12 @@ function SuspendedModal({ onClose }) {
 }
 
 export default function Home() {
-  const status = useBackendStatus();
+  const backendStatus = useBackendStatus();
+  // Analysis and aeroelasticity run XFOIL in the browser, so the site is
+  // usable even when the server is asleep or down; only browsers that can't
+  // run it (no WebAssembly) still depend on the server's status here.
+  const local = localXfoilSupported();
+  const status = local ? "online" : backendStatus;
   const [count, setCount] = useState(undefined);
   const [popupDismissed, setPopupDismissed] = useState(() => sessionStorage.getItem("suspension_popup_shown") === "1");
 
@@ -45,7 +51,7 @@ export default function Home() {
     let alive = true;
     getAnalysisCount().then((c) => alive && setCount(c));
     return () => { alive = false; };
-  }, [status === "online"]);
+  }, [backendStatus === "online"]); // re-read the counter once the server is up
 
   const closePopup = () => {
     try { sessionStorage.setItem("suspension_popup_shown", "1"); } catch { /* private mode */ }

@@ -21,3 +21,7 @@ desktop.ini
 
 # Example airfoils served by the React site
 !aerolab-web/public/examples/*.dat
+
+# XFOIL built from third_party/xfoil (build.sh)
+third_party/xfoil/xfoil
+third_party/xfoil/build/

@@ -5,10 +5,12 @@ import StatusBanner from "../components/StatusBanner.jsx";
 import AirfoilPicker from "../components/AirfoilPicker.jsx";
 import { Alert, Checkbox, Details, NumberField, Segmented, Spinner } from "../components/ui.jsx";
 import Plot, { chartLayout, decorations, hline, vline, vlines } from "../lib/Plot.jsx";
-import { postForm } from "../lib/http.js";
+import { ApiError, postForm } from "../lib/http.js";
+import { localXfoilSupported, runXfoilSession, warmUpXfoil, XfoilUnavailable } from "../lib/xfoil/xfoilClient.js";
+import { AeroError, runAeroLocal } from "../lib/aero/index.js";
 import { downloadText, toCsv } from "../lib/files.js";
 import { useBackendStatus } from "../useBackendStatus.js";
-import { COLORS } from "../config.js";
+import { BACKEND_URL, COLORS } from "../config.js";
 import { MODULES } from "./Aeroelasticity.jsx";
 
 const DEFAULTS = {
@@ -209,8 +211,26 @@ function HistoryCsv({ rows, name }) {
   );
 }
 
+// Runs the analysis in the browser (solvers in lib/aero/, XFOIL as
+// WebAssembly); the server is used only if this browser can't run XFOIL.
+async function runAero(module, path, fields, file) {
+  if (localXfoilSupported()) {
+    try {
+      const r = await runAeroLocal(module, fields, file, runXfoilSession);
+      fetch(`${BACKEND_URL}/analysis_count/increment`, { method: "POST", keepalive: true }).catch(() => {});
+      return r;
+    } catch (e) {
+      if (e instanceof AeroError) throw new ApiError(e.message, e.status);
+      if (!(e instanceof XfoilUnavailable)) console.warn("In-browser aeroelasticity failed, using the server:", e);
+    }
+  }
+  return postForm(path, fields, { file, timeoutMs: 280000, retries: 0 });
+}
+
 function AeroRun({ module }) {
   const status = useBackendStatus();
+  const [localOk, setLocalOk] = useState(localXfoilSupported());
+  useEffect(() => { warmUpXfoil().then((ok) => setLocalOk(ok && localXfoilSupported())); }, []);
   const valid = Object.prototype.hasOwnProperty.call(MODULES, module);
   const [airfoil, setAirfoil] = useState(null);
   const [reynolds, setReynolds] = useState(500_000);
@@ -249,8 +269,7 @@ function AeroRun({ module }) {
         v_start: p.v_start, v_step: p.v_step, v_max: p.v_max };
     }
     try {
-      const r = await postForm(path, fields, {
-        file: airfoil ? { name: airfoil.name, content: airfoil.content } : null, timeoutMs: 280000, retries: 0 });
+      const r = await runAero(module, path, fields, airfoil ? { name: airfoil.name, content: airfoil.content } : null);
       const entry = { r, p: { ...p }, airfoil: airfoil?.name || "NACA 0012", reynolds };
       lastResults[module] = entry;
       setResult(entry);
@@ -271,7 +290,7 @@ function AeroRun({ module }) {
       <div className="aero-form">
         <h1 style={{ fontSize: "clamp(24px,3.5vw,36px)", lineHeight: 1.1, margin: "20px 0 4px" }}>{MODULES[module].name}</h1>
         <p className="tool-sub">{MODULES[module].tagline}</p>
-        <StatusBanner status={status} />
+        {!localOk && <StatusBanner status={status} />}
 
         <div className="card stack" style={{ marginTop: 16 }}>
           <AirfoilPicker value={airfoil} onChange={setAirfoil} label="Airfoil" defaultLabel="NACA 0012 (default)" />
@@ -332,10 +351,10 @@ function AeroRun({ module }) {
             {num("Sweep up to (m/s)", "v_max", { min: 1 })}
           </div>
 
-          <button className="btn btn-block" onClick={run} disabled={running || status === "unavailable"}>
+          <button className="btn btn-block" onClick={run} disabled={running || (!localOk && status === "unavailable")}>
             {running ? "Running…" : "Run analysis"}
           </button>
-          {running && <Spinner>Running XFOIL and solving the aeroelastic equilibrium…</Spinner>}
+          {running && <Spinner>Running XFOIL in your browser and solving the aeroelastic equilibrium… (typically 10–40 s)</Spinner>}
           {error && <Alert kind="error">{error}</Alert>}
         </div>
 

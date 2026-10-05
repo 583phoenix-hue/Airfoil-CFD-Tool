@@ -454,6 +454,28 @@ def parse_polar_coefficients(polar_path: str):
     return {"CL": last[1], "CD": last[2], "CDp": last[3], "Cm": last[4]}
 
 
+def _polar_has_alpha(polar_path: str, alpha: float) -> bool:
+    """True if XFOIL's PACC polar file has a (converged) row at this alpha."""
+    if not os.path.exists(polar_path):
+        return False
+    header_passed = False
+    with open(polar_path, "r") as f:
+        for line in f:
+            stripped = line.strip()
+            if stripped.startswith("---"):
+                header_passed = True
+                continue
+            if not header_passed or not stripped:
+                continue
+            try:
+                vals = [float(p) for p in stripped.split()]
+            except ValueError:
+                continue
+            if len(vals) >= 5 and abs(vals[0] - alpha) < 1e-3:
+                return True
+    return False
+
+
 def extract_aerodynamic_coefficients(stdout: str):
     """Extract coefficients — takes last occurrence (final converged value)."""
     coefficients = {}
@@ -563,6 +585,20 @@ def parse_bl_dump(bl_file_path: str):
         return None
 
 
+def ramp_angles(alpha: float):
+    """Warm-start angles for the ramp strategy: 0 deg towards the target in
+    steps of at most 2.5 deg (target excluded), or None if |alpha| < 1.
+    XFOIL converges far more reliably when each solution starts from the
+    previous angle's (e.g. Clark Y, Re 500k, 5 deg fails from a cold start in
+    XFOIL 6.996 but converges via 0 and 2.5). Same as rampAngles() in the
+    browser solver (aerolab-web/src/lib/xfoil/analysis.js)."""
+    import math as _m
+    n = _m.ceil(abs(alpha) / 2.5)
+    if n < 1 or abs(alpha) < 1:
+        return None
+    return [round(alpha * i / n, 3) for i in range(n)]
+
+
 def run_xfoil_sync(
     coords_file:    str,
     reynolds:       float,
@@ -591,9 +627,22 @@ def run_xfoil_sync(
                                reynolds, alpha, viscous=False, timeout=20, smooth_geometry=False,
                                ncrit=ncrit, mach=mach)
 
-    # Strategy 1: Viscous, clean geometry
+    # Strategy 1: Viscous, warm-started from 0 deg (when |alpha| >= 1)
+    ramp = ramp_angles(alpha)
+    if ramp:
+        try:
+            logger.info(f"Attempt 1: VISCOUS mode, warm start via {ramp} (NCrit={ncrit})...")
+            return _run_xfoil_mode(coords_filename, cp_filename, bl_filename, work_dir,
+                                   reynolds, alpha, viscous=True, timeout=90, smooth_geometry=False,
+                                   ncrit=ncrit, mach=mach, ramp=ramp)
+        except subprocess.TimeoutExpired:
+            logger.error("Viscous warm-start mode timed out after 90s")
+        except Exception as e:
+            logger.info(f"Warm-start strategy failed: {e}")
+
+    # Strategy 2: Viscous, clean geometry, cold start
     try:
-        logger.info(f"Attempt 1: VISCOUS mode, clean geometry (NCrit={ncrit})...")
+        logger.info(f"Attempt 2: VISCOUS mode, clean geometry (NCrit={ncrit})...")
         return _run_xfoil_mode(coords_filename, cp_filename, bl_filename, work_dir,
                                reynolds, alpha, viscous=True, timeout=90, smooth_geometry=False,
                                ncrit=ncrit, mach=mach)
@@ -601,22 +650,20 @@ def run_xfoil_sync(
         logger.error("Viscous mode timed out after 90s")
     except Exception as e:
         # Catch ALL xfoil solver failures so we always fall through to next strategy.
-        # Previously only caught "convergence"/"no pressure data" — but "No valid
-        # aerodynamic coefficients found" was re-raised, skipping strategies 2 & 3.
-        logger.info(f"Strategy 1 failed: {e}")
+        logger.info(f"Cold-start strategy failed: {e}")
 
-    # Strategy 2: Viscous, smoothed geometry
+    # Strategy 3: Viscous, smoothed geometry
     try:
-        logger.info(f"Attempt 2: VISCOUS mode, smoothed geometry (NCrit={ncrit})...")
+        logger.info(f"Attempt 3: VISCOUS mode, smoothed geometry (NCrit={ncrit})...")
         return _run_xfoil_mode(coords_filename, cp_filename, bl_filename, work_dir,
                                reynolds, alpha, viscous=True, timeout=90, smooth_geometry=True,
                                ncrit=ncrit, mach=mach)
     except subprocess.TimeoutExpired:
         logger.error("Viscous mode with smoothing timed out")
     except Exception as e:
-        logger.info(f"Strategy 2 failed: {e}")
+        logger.info(f"Smoothed-geometry strategy failed: {e}")
 
-    # Strategy 3: Inviscid fallback (no BL data)
+    # Strategy 4: Inviscid fallback (no BL data)
     sep = "=" * 70
     logger.info(sep)
     logger.warning("FALLING BACK TO INVISCID MODE")
@@ -642,6 +689,7 @@ def _run_xfoil_mode(
     smooth_geometry: bool = False,
     ncrit:           float = 9.0,
     mach:            float = 0.0,
+    ramp:            Optional[list] = None,
 ):
     cp_out_path    = os.path.abspath(os.path.join(work_dir, cp_filename))
     bl_out_path    = os.path.abspath(os.path.join(work_dir, bl_filename))
@@ -679,6 +727,9 @@ def _run_xfoil_mode(
         script_lines.append("VPAR")
         script_lines.append(f"N {ncrit}")
         script_lines.append("")
+        # Warm-up angles (not accumulated in the polar file)
+        for a_warm in (ramp or []):
+            script_lines.append(f"ALFA {a_warm}")
 
     # Polar accumulation: XFOIL always writes a numeric CL/CD/CDp/Cm row here
     # on every ALFA solve, viscous or inviscid — unlike the console printout,
@@ -771,11 +822,17 @@ def _run_xfoil_mode(
                 logger.warning("Viscous mode requested but may not have converged")
                 logger.info("   Results may be inviscid or unconverged")
 
-        convergence_failed = (
-            "VISCAL:  Convergence failed" in stdout or
-            "not converged" in stdout.lower() or
-            "unconverged" in stdout.lower()
-        )
+        if ramp:
+            # Warm-up angles may print failures of their own; the target angle
+            # converged iff it made it into the polar file (XFOIL only
+            # accumulates converged points).
+            convergence_failed = not _polar_has_alpha(polar_out_path, alpha)
+        else:
+            convergence_failed = (
+                "VISCAL:  Convergence failed" in stdout or
+                "not converged" in stdout.lower() or
+                "unconverged" in stdout.lower()
+            )
         if convergence_failed:
             raise Exception(f"Viscous convergence failed at alpha={alpha}")
 
@@ -904,6 +961,15 @@ def analysis_count(request: Request):
     except Exception as e:
         logger.info(f"analysis_count unavailable: {e}")
         return {"count": None}
+
+
+@app.post("/analysis_count/increment")
+async def analysis_count_increment():
+    """Analyses now run in the visitor's browser (XFOIL compiled to
+    WebAssembly), so the page calls this after each one to keep the public
+    counter going."""
+    await _count_analysis_async()
+    return {"ok": True}
 
 
 @app.post("/upload_airfoil/")

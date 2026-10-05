@@ -6,7 +6,7 @@ import { COLORS } from "../config.js";
 const MODES = [
   { icon: "📐", accent: COLORS.c2, title: "Analyze Airfoil", to: "/analysis", cta: "Analyze an airfoil →",
     desc: "Upload a coordinate file or pick a bundled example. Get lift, drag, moment coefficients, and pressure distribution from XFOIL." },
-  { icon: "✏️", accent: COLORS.c5, title: "Inverse Design", to: "/inverse-design", cta: "Design an airfoil →", soon: true,
+  { icon: "✏️", accent: COLORS.c5, title: "Inverse Design", to: "/inverse-design", cta: "Design an airfoil →",
     desc: "Draw the pressure distribution you want. AeroLab generates an airfoil shape to match it, then verifies the result with a real analysis." },
   { icon: "〰️", accent: COLORS.c6, title: "Aeroelasticity", to: "/aeroelasticity", cta: "Explore aeroelasticity →",
     desc: "Check how a flexible wing responds to airspeed: torsional divergence, control reversal, and flutter, computed from real airfoil data." },

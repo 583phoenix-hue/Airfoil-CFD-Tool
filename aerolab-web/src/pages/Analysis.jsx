@@ -12,7 +12,9 @@ import Plot, { chartLayout, downloadMplPng, hline } from "../lib/Plot.jsx";
 import { postForm, ApiError } from "../lib/http.js";
 import { downloadText, readFileText, stem, toCsv } from "../lib/files.js";
 import { useBackendStatus } from "../useBackendStatus.js";
-import { COLORS } from "../config.js";
+import { BACKEND_URL, COLORS } from "../config.js";
+import { analyzeInBrowser, localXfoilSupported, warmUpXfoil, XfoilUnavailable } from "../lib/xfoil/xfoilClient.js";
+import { AnalysisError } from "../lib/xfoil/analysis.js";
 
 const RE_PRESETS = [
   ["custom", "Custom", null],
@@ -34,9 +36,39 @@ function hash(s) {
   return (h >>> 0).toString(36);
 }
 
+// Adds one to the public "analyses run" counter (the server used to count
+// its own runs; analyses now run in the browser).
+function countAnalysis() {
+  fetch(`${BACKEND_URL}/analysis_count/increment`, { method: "POST", keepalive: true }).catch(() => {});
+}
+
+// XFOIL runs in the visitor's browser (WebAssembly, see lib/xfoil/). The
+// server is only used if this browser can't run it.
+async function runLocal(file, p, signal) {
+  if (!localXfoilSupported()) return null;
+  if (signal?.aborted) throw new ApiError("Cancelled.");
+  try {
+    const res = await analyzeInBrowser(file.content, p);
+    if (signal?.aborted) throw new ApiError("Cancelled.");
+    countAnalysis();
+    return res;
+  } catch (e) {
+    if (e instanceof ApiError) throw e;
+    if (e instanceof AnalysisError) throw new ApiError(e.message, e.status);
+    if (!(e instanceof XfoilUnavailable)) console.warn("In-browser XFOIL failed, using the server:", e);
+    return null;
+  }
+}
+
 async function runXfoil(file, p, signal) {
   const key = [hash(file.content), file.name, p.reynolds, p.alpha, p.ncrit, p.mode, p.mach].join("|");
   if (resultCache.has(key)) return resultCache.get(key);
+  const local = await runLocal(file, p, signal);
+  if (local) {
+    resultCache.set(key, local);
+    if (resultCache.size > 200) resultCache.delete(resultCache.keys().next().value);
+    return local;
+  }
   const res = await postForm("/upload_airfoil/", {
     reynolds: p.reynolds, alpha: p.alpha, ncrit: p.ncrit, mode: p.mode, mach: p.mach,
   }, { file: { name: /\.(dat|txt)$/i.test(file.name) ? file.name : `${file.name}.dat`, content: file.content },
@@ -411,7 +443,13 @@ function CompareResult({ a, b, p }) {
 // ── Page ─────────────────────────────────────────────────────────────────
 export default function Analysis() {
   const status = useBackendStatus();
-  useEffect(() => { document.title = "Airfoil Analysis - AeroLab"; }, []);
+  // In-browser XFOIL: start loading it straight away; only if that fails does
+  // the page depend on the server (and show its waking/unavailable banner).
+  const [localOk, setLocalOk] = useState(localXfoilSupported());
+  useEffect(() => {
+    document.title = "Airfoil Analysis - AeroLab";
+    warmUpXfoil().then((ok) => setLocalOk(ok && localXfoilSupported()));
+  }, []);
 
   // parameters
   const [rePreset, setRePreset] = useState("500k");
@@ -506,7 +544,8 @@ export default function Analysis() {
         }
         setResult({ kind: "sweep", rows, first, p: { ...base, alphaStart: range[0], alphaEnd: range[1], alphaStep, filename: file.name } });
       } else {
-        setProgress({ value: 0.4, text: "Computing… (30–60 s if the solver was asleep, otherwise a few seconds)" });
+        setProgress({ value: 0.4, text: localOk ? "Computing in your browser…"
+          : "Computing… (30–60 s if the solver was asleep, otherwise a few seconds)" });
         const r = await runXfoil(file, { ...base, alpha }, ctrl.signal);
         setResult({ kind: "single", res: r, p: { ...base, alpha, filename: file.name } });
       }
@@ -578,7 +617,7 @@ export default function Analysis() {
         <main className="tool-main">
           <h1 className="tool-h1">✈️ Airfoil Analysis</h1>
           <p className="tool-sub">Powered by the XFOIL panel method</p>
-          <StatusBanner status={status} />
+          {!localOk && <StatusBanner status={status} />}
 
           <div className="card stack" style={{ marginTop: 16 }}>
             <Segmented value={inputMode} onChange={(v) => { setInputMode(v); setError(null); }} ariaLabel="Input mode"
@@ -601,7 +640,7 @@ export default function Analysis() {
             {inputMode === "compare" && <div className="caption">Both airfoils run at the same Re, α and NCrit. AOA sweep is off in compare mode.</div>}
 
             <div className="btn-row">
-              <button className="btn" onClick={run} disabled={!hasInput || running || status === "unavailable"}>{btnLabel}</button>
+              <button className="btn" onClick={run} disabled={!hasInput || running || (!localOk && status === "unavailable")}>{btnLabel}</button>
               {running && <button className="btn btn-secondary" onClick={() => abortRef.current?.abort()}>Cancel</button>}
             </div>
             {running && progress && (progress.value > 0 || sweepActive || inputMode === "batch"

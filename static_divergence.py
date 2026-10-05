@@ -467,9 +467,6 @@ def divergence_from_polar(polar, alpha_root, k_alpha, x_ea_over_c, chord, span, 
 
     if q_div is not None and q_div <= q_max:
         stopped_reason = "divergence_found"
-    elif q_div is not None:
-        stopped_reason = "no_divergence_in_range"
-        q_div = v_div = theta_div = alpha_div = None
     elif (k_min_ratio is not None and k_min_ratio < RUNAWAY_STIFFNESS_RATIO
           and i_min < int(within.sum()) - 1):
         # No mathematical fold, but the effective stiffness collapsed to a
@@ -495,6 +492,14 @@ def divergence_from_polar(polar, alpha_root, k_alpha, x_ea_over_c, chord, span, 
             f"effects in the XFOIL data) and stiffen it again. A real wing would not "
             f"survive that, so this is reported as the divergence speed."
         )
+    elif q_div is not None:
+        # The branch only folds above v_max (and nothing ran away below it).
+        # Checked after the stall-limited case: a fold far beyond the range
+        # must not hide a twist runaway inside it (XFOIL 6.996's polar for
+        # the NACA 0012 defaults folds past 100 m/s but still runs away at
+        # ~60 m/s, which this ordering used to report as "no divergence").
+        stopped_reason = "no_divergence_in_range"
+        q_div = v_div = theta_div = alpha_div = None
     elif branch["saturates"]:
         stopped_reason = "no_divergence_possible"
     else:

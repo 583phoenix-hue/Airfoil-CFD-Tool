@@ -1,30 +1,26 @@
-# FastAPI backend (main.py) for the React site. Render: Docker service,
+# FastAPI backend (main.py). Render: Docker service,
 # Dockerfile path = Dockerfile.backend.
 
-# ---- 1. Small fix for Debian's XFOIL build ----
-# Debian compiles XFOIL with floating-point traps on, so it crashes
-# (SIGFPE) on a harmless divide-by-zero when graphics are switched off.
-# This one-function library turns the traps off when preloaded.
-FROM python:3.11-slim AS nofpe
-RUN apt-get update && apt-get install -y --no-install-recommends gcc libc6-dev \
-    && printf 'void _gfortran_set_fpe(int v) { (void)v; }\n' > /nofpe.c \
-    && gcc -shared -fPIC -O2 -o /nofpe.so /nofpe.c
+# ---- 1. Build XFOIL 6.996 from source (third_party/xfoil) ----
+# The same XFOIL version the website runs in the browser, so the server's
+# results match. Built without graphics; every run uses PLOP G.
+FROM python:3.11-slim AS xfoil
+RUN apt-get update && apt-get install -y --no-install-recommends gfortran gcc libc6-dev \
+    && rm -rf /var/lib/apt/lists/*
+COPY third_party/xfoil /xfoil
+RUN sh /xfoil/build.sh
 
 # ---- 2. Backend ----
 FROM python:3.11-slim
 
 WORKDIR /app
 
-# XFOIL 6.99 from Debian. Every XFOIL run uses PLOP G (graphics off), so no
-# X display / Xvfb is needed.
-RUN apt-get update && apt-get install -y --no-install-recommends xfoil \
+# Fortran runtime for XFOIL
+RUN apt-get update && apt-get install -y --no-install-recommends libgfortran5 \
     && rm -rf /var/lib/apt/lists/*
+COPY --from=xfoil /xfoil/xfoil /usr/local/bin/xfoil
 
-COPY --from=nofpe /nofpe.so /usr/local/lib/nofpe.so
-RUN printf '#!/bin/sh\nLD_PRELOAD=/usr/local/lib/nofpe.so exec /usr/bin/xfoil "$@"\n' > /usr/local/bin/xfoil-run \
-    && chmod +x /usr/local/bin/xfoil-run
-
-ENV XFOIL_PATH=/usr/local/bin/xfoil-run \
+ENV XFOIL_PATH=/usr/local/bin/xfoil \
     PYTHONUNBUFFERED=1
 
 COPY requirements.txt .
