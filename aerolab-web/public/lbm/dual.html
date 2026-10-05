@@ -94,9 +94,6 @@
         <option value="vort">Vorticity</option>
         <option value="smoke">Smoke</option>
       </select>
-      <label class="ck2" title="Tracer lines that follow the air, showing its direction (hidden in Smoke view).">
-        <input type="checkbox" id="tr2-shared" checked> Show trails
-      </label>
     </div>
 
     <div class="cr2">
@@ -161,8 +158,8 @@ const USER_NAME_B   = %%USER_NAME_B%%;
 //    run stays stable while the wake is free to roll up into eddies.
 //  • Sponge layer before the outlet so vortices leave quietly instead of
 //    reflecting back into the domain.
-//  • Everything visual runs on the GPU: colour field, smoke (dye) transport,
-//    trail particles and their fading trails. The CPU only reads the field
+//  • Everything visual runs on the GPU: colour field and smoke (dye)
+//    transport. The CPU only reads the field
 //    back every few frames for CL/CD, separation and colour-scale ranges.
 //  • Steps per frame are tuned automatically to the machine (see driver),
 //    so the flow moves as fast as the GPU allows.
@@ -180,10 +177,7 @@ const LBM = {
   CS: 0.16,             // Smagorinsky constant
   SPONGE_START: 0.80,   // fraction of NX where the outlet sponge begins
   SPONGE_TAU: 0.85,
-  PT: 72,               // particle texture side (72² = 5184 ≥ 5000 max trails)
-  TRAIL_W: 1280, TRAIL_H: 640,
   VORT_C: 7.4,          // vorticity colour full-scale, in units of U/c
-  TRAILS: 2000,         // particles drawn when "Show trails" is on
 };
 LBM.CHORD_L = LBM.NX / (LBM.DX1 - LBM.DX0); // lattice cells per chord (213)
 LBM.NU = (LBM.TAU0 - 0.5) / 3;              // lattice viscosity
@@ -374,103 +368,6 @@ void main(){
   o=vec4(d*0.9995,0.0,0.0,1.0);
 }`;
 
-// Particle update: RK2 through the (bilinear) lattice velocity.
-// State = (x, y, life, age). Tracers enter only at the inlet, at a height
-// fixed per particle (spread evenly, a third biased to the centre band), and
-// normally live until they leave the domain. Only tracers trapped in slow
-// recirculation run out of life; those, like every tracer, fade out and in
-// smoothly (see the trail shader), so nothing pops on or off mid-screen.
-const LBM_PART_FS = () => `#version 300 es
-precision highp float; precision highp int;
-${LBM_GLSL_CONST()}
-uniform sampler2D texState, texC, texMask;
-uniform float steps, seed, U0;
-uniform int PT;
-out vec4 o;
-float hash(float n){ return fract(sin(n)*43758.5453123); }
-vec2 vel(vec2 w){ // world -> lattice velocity (cells/step), bilinear
-  vec2 c=vec2((w.x-DX0)/DXW*float(NX),(w.y-DY0)/DYH*float(NY))-0.5;
-  vec2 i0=floor(c); vec2 t=c-i0;
-  ivec2 a=clamp(ivec2(i0),ivec2(0),ivec2(NX-2,NY-2));
-  vec2 u00=texelFetch(texC,a,0).ba, u10=texelFetch(texC,a+ivec2(1,0),0).ba;
-  vec2 u01=texelFetch(texC,a+ivec2(0,1),0).ba, u11=texelFetch(texC,a+ivec2(1,1),0).ba;
-  return mix(mix(u00,u10,t.x),mix(u01,u11,t.x),t.y);
-}
-bool solid(vec2 w){
-  ivec2 c=ivec2(int((w.x-DX0)/DXW*float(NX)),int((w.y-DY0)/DYH*float(NY)));
-  if(c.x<0||c.y<0||c.x>=NX||c.y>=NY) return false;
-  return texelFetch(texMask,c,0).r>0.5;
-}
-void main(){
-  ivec2 tc=ivec2(gl_FragCoord.xy);
-  float id=float(tc.y*PT+tc.x);
-  vec4 s=texelFetch(texState,tc,0);
-  vec2 pos=s.xy; float life=s.z, age=s.w;
-  float lane=hash(id*0.6180339)<0.33 ? DY0+DYH*(0.5+(hash(id*1.4142)-0.5)/3.0) : DY0+DYH*(0.02+0.96*hash(id*2.7182));
-  float sub=max(1.0,ceil(steps/12.0)); float h=steps/sub;
-  vec2 u=vec2(0.0);
-  for(int k=0;k<16;k++){
-    if(float(k)>=sub) break;
-    vec2 u1=vel(pos);
-    vec2 u2=vel(pos+0.5*h*u1*CELL);
-    u=u2; pos+=h*u2*CELL;
-  }
-  // slow = trapped in recirculation: use up life faster so it gets recycled
-  bool slow=dot(u,u)<(0.04*U0)*(0.04*U0);
-  life-= slow?4.0:1.0;
-  age+=1.0;
-  bool out_=pos.x<DX0||pos.x>DX0+DXW||pos.y<DY0||pos.y>DY0+DYH;
-  if(life<=0.0||out_||solid(pos)){
-    float r=hash(id*1.37+seed);
-    pos=vec2(DX0+0.004+0.02*r,lane);
-    life=900.0+600.0*hash(id*7.91+seed*1.3);
-    age=0.0;
-  }
-  o=vec4(pos,life,age);
-}`;
-
-const LBM_TRAIL_VS = () => `#version 300 es
-precision highp float; precision highp int;
-${LBM_GLSL_CONST()}
-uniform sampler2D stOld, stNew, texC;
-uniform int PT, fieldMode;
-uniform float U0, maxS;
-out vec4 vCol;
-vec3 speedColor(float t){
-  vec3 C[10]=vec3[10](vec3(0,0,40),vec3(0,0,180),vec3(0,80,255),vec3(0,180,255),vec3(0,255,255),vec3(0,255,140),vec3(60,255,0),vec3(255,255,0),vec3(255,140,0),vec3(255,0,0));
-  t=clamp(t,0.0,1.0); float f=t*9.0; int i=min(int(floor(f)),8);
-  return mix(C[i],C[i+1],f-float(i))/255.0;
-}
-void main(){
-  int pid=gl_VertexID/2, end=gl_VertexID-pid*2;
-  ivec2 tc=ivec2(pid%PT,pid/PT);
-  vec4 a=texelFetch(stOld,tc,0), b=texelFetch(stNew,tc,0);
-  bool jumped=b.w<a.w||distance(a.xy,b.xy)>0.08;
-  vec2 p=(end==0&&!jumped)?a.xy:b.xy;
-  gl_Position=vec4((p.x-DX0)/DXW*2.0-1.0,(p.y-DY0)/DYH*2.0-1.0,0.0,1.0);
-  vec2 c=vec2((b.x-DX0)/DXW*float(NX),(b.y-DY0)/DYH*float(NY));
-  ivec2 ci=clamp(ivec2(c),ivec2(0),ivec2(NX-1,NY-1));
-  float t=min(length(texelFetch(texC,ci,0).ba)/U0/max(maxS*0.92,1e-3),1.0);
-  if(fieldMode==2){ float w=(160.0+t*95.0)/255.0; vCol=vec4(w,w,w,0.4); }
-  else{
-    vec3 base=fieldMode==1?vec3(255.0,193.0,66.0)/255.0:speedColor(t);
-    float lum=0.55+t*0.45;
-    vCol=vec4(base*0.4+0.6*lum,0.75);
-  }
-  vCol.a*=smoothstep(0.0,25.0,b.w)*smoothstep(0.0,60.0,b.z);
-  if(jumped) vCol.a=0.0;
-}`;
-
-const LBM_TRAIL_FS = `#version 300 es
-precision highp float;
-in vec4 vCol; out vec4 o;
-void main(){ o=vec4(vCol.rgb*vCol.a,vCol.a); }`;
-
-const LBM_FADE_FS = `#version 300 es
-precision highp float;
-uniform float fade; out vec4 o;
-void main(){ o=vec4(0.0,0.0,0.0,fade); }`;
-
 // Per-cell display scalar (normalised 0..1, or -1..1 for vorticity) + solid flag.
 const LBM_FIELD_FS = () => `#version 300 es
 precision highp float;
@@ -495,11 +392,11 @@ void main(){
   o=vec4(t,solid,0.0,1.0);
 }`;
 
-// Final image for the display window: smooth colour field + trails.
+// Final image for the display window: smooth colour field.
 const LBM_COMPOSITE_FS = () => `#version 300 es
 precision highp float;
 ${LBM_GLSL_CONST()}
-uniform sampler2D texField, texTrail;
+uniform sampler2D texField;
 uniform int fieldMode;
 uniform vec4 view; // VX0, VY0, VXW, VYH
 in vec2 vUV; out vec4 o;
@@ -528,21 +425,20 @@ void main(){
   else if(fieldMode==2) col=vortColor(f.r);
   else { vec3 bg=vec3(0.035,0.045,0.08); col=mix(bg,vec3(0.93,0.95,1.0),clamp(f.r*1.15,0.0,1.0)); }
   col=mix(col,vec3(0.039,0.043,0.078),smoothstep(0.35,0.65,f.g));
-  if(fieldMode!=3){ vec4 tr=texture(texTrail,g); col=tr.rgb+col*(1.0-tr.a); }
   o=vec4(col,1.0);
 }`;
 
 // ── one tunnel instance ─────────────────────────────────────────────────
 function createTunnel(opts) {
   const { canvas, coords, name, ids } = opts;
-  const { NX, NY, DX0, DX1, DY0, DY1, VX0, VX1, VY0, VY1, PT } = LBM;
+  const { NX, NY, DX0, DX1, DY0, DY1, VX0, VX1, VY0, VY1 } = LBM;
   const W = 780, H = 360, PX = 54, PY = 26, RIGHT = 142;
   const PW = W - PX - RIGHT, PH = H - 2 * PY;
   const cx = canvas.getContext('2d');
   const $ = (id) => (id ? document.getElementById(id) : null);
 
   const state = {
-    U0: 0.06, aDeg: 6, fieldMode: 0, nPart: LBM.TRAILS,
+    U0: 0.06, aDeg: 6, fieldMode: 0,
     maxS: 1.6, cpMin: -1.5, cpMax: 1.0, CL: null, CD: null, sep: 0, frame: 0,
   };
 
@@ -593,7 +489,7 @@ function createTunnel(opts) {
   const f32 = (w, h, d, filt) => tex(w, h, gl.RGBA32F, gl.RGBA, gl.FLOAT, filt || gl.NEAREST, d);
   const f16 = (w, h, filt) => tex(w, h, gl.RGBA16F, gl.RGBA, gl.HALF_FLOAT, filt, null);
 
-  let lat, cur = 0, maskTex = null, dye, dyeCur = 0, parts, partCur = 0, trailT, trailF, fieldT, fieldF;
+  let lat, cur = 0, maskTex = null, dye, dyeCur = 0, fieldT, fieldF;
   function bind(unit, t, loc) { gl.activeTexture(gl.TEXTURE0 + unit); gl.bindTexture(gl.TEXTURE_2D, t); gl.uniform1i(loc, unit); }
 
   function initLattice() {
@@ -606,29 +502,14 @@ function createTunnel(opts) {
     }
     lat = [0, 1].map(() => { const t = [f32(NX, NY, a), f32(NX, NY, b), f32(NX, NY, c)]; return { t, f: fbo(t) }; });
   }
-  function initParticles() {
-    // lanes are derived from the particle id on the GPU; start everyone at a
-    // random spot so the screen is evenly filled from the first frame
-    const n = PT * PT, d = new Float32Array(n * 4);
-    for (let i = 0; i < n; i++) {
-      d.set([DX0 + Math.random() * (DX1 - DX0), DY0 + Math.random() * (DY1 - DY0), 300 + Math.random() * 900, 25 + Math.random() * 50], i * 4);
-    }
-    parts = [0, 1].map(() => { const t = f32(PT, PT, d); return { t, f: fbo([t]) }; });
-  }
-
   if (ok) {
     try {
       program('step', LBM_VS, LBM_STEP_FS(), ['texA', 'texB', 'texC', 'texMask', 'tau0', 'cs', 'U0', 'spongeStart', 'spongeTau']);
       program('dye', LBM_VS, LBM_DYE_FS(), ['texDye', 'texC', 'texMask', 'steps']);
-      program('part', LBM_VS, LBM_PART_FS(), ['texState', 'texC', 'texMask', 'steps', 'seed', 'U0', 'PT']);
-      program('trail', LBM_TRAIL_VS(), LBM_TRAIL_FS, ['stOld', 'stNew', 'texC', 'PT', 'fieldMode', 'U0', 'maxS']);
-      program('fade', LBM_VS, LBM_FADE_FS, ['fade']);
       program('field', LBM_VS, LBM_FIELD_FS(), ['texC', 'texMask', 'texDye', 'fieldMode', 'U0', 'maxS', 'cpMin', 'cpMax', 'vortFull']);
-      program('comp', LBM_VS, LBM_COMPOSITE_FS(), ['texField', 'texTrail', 'fieldMode', 'view']);
+      program('comp', LBM_VS, LBM_COMPOSITE_FS(), ['texField', 'fieldMode', 'view']);
       initLattice();
       dye = [0, 1].map(() => { const t = f16(NX, NY, gl.LINEAR); return { t, f: fbo([t]) }; });
-      initParticles();
-      trailT = f16(LBM.TRAIL_W, LBM.TRAIL_H, gl.LINEAR); trailF = fbo([trailT]);
       fieldT = f16(NX, NY, gl.LINEAR); fieldF = fbo([fieldT]);
       gl.bindFramebuffer(gl.FRAMEBUFFER, null);
     } catch (e) { ok = false; err = e.message; }
@@ -661,26 +542,6 @@ function createTunnel(opts) {
     bind(0, s.t, U.dye.texDye); bind(1, lat[cur].t[2], U.dye.texC); bind(2, maskTex, U.dye.texMask);
     gl.uniform1f(U.dye.steps, steps); quad(); dyeCur = 1 - dyeCur;
   }
-  function particlePass(steps) {
-    const s = parts[partCur], d = parts[1 - partCur];
-    gl.bindFramebuffer(gl.FRAMEBUFFER, d.f); gl.viewport(0, 0, PT, PT); gl.useProgram(prog.part);
-    bind(0, s.t, U.part.texState); bind(1, lat[cur].t[2], U.part.texC); bind(2, maskTex, U.part.texMask);
-    gl.uniform1f(U.part.steps, steps); gl.uniform1f(U.part.seed, Math.random() * 1000); gl.uniform1f(U.part.U0, state.U0); gl.uniform1i(U.part.PT, PT);
-    quad();
-    // fade old trails, then draw this frame's segments (premultiplied alpha)
-    gl.bindFramebuffer(gl.FRAMEBUFFER, trailF); gl.viewport(0, 0, LBM.TRAIL_W, LBM.TRAIL_H);
-    gl.enable(gl.BLEND);
-    gl.useProgram(prog.fade); gl.blendFunc(gl.ZERO, gl.ONE_MINUS_SRC_ALPHA); gl.uniform1f(U.fade.fade, 0.06); quad();
-    if (state.fieldMode !== 3 && state.nPart > 0) {
-      gl.useProgram(prog.trail); gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
-      const u = U.trail;
-      bind(0, s.t, u.stOld); bind(1, d.t, u.stNew); bind(2, lat[cur].t[2], u.texC);
-      gl.uniform1i(u.PT, PT); gl.uniform1i(u.fieldMode, state.fieldMode); gl.uniform1f(u.U0, state.U0); gl.uniform1f(u.maxS, state.maxS);
-      gl.drawArrays(gl.LINES, 0, state.nPart * 2);
-    }
-    gl.disable(gl.BLEND);
-    partCur = 1 - partCur;
-  }
   function displayPass() {
     gl.bindFramebuffer(gl.FRAMEBUFFER, fieldF); gl.viewport(0, 0, NX, NY); gl.useProgram(prog.field);
     const u = U.field;
@@ -690,7 +551,7 @@ function createTunnel(opts) {
     gl.uniform1f(u.vortFull, LBM.VORT_C * state.U0 / LBM.CHORD_L);
     quad();
     gl.bindFramebuffer(gl.FRAMEBUFFER, null); gl.viewport(0, 0, glcv.width, glcv.height); gl.useProgram(prog.comp);
-    bind(0, fieldT, U.comp.texField); bind(1, trailT, U.comp.texTrail);
+    bind(0, fieldT, U.comp.texField);
     gl.uniform1i(U.comp.fieldMode, state.fieldMode); gl.uniform4f(U.comp.view, VX0, VY0, VX1 - VX0, VY1 - VY0);
     quad();
   }
@@ -792,7 +653,6 @@ function createTunnel(opts) {
     if (!ok) { drawFallback(); return; }
     for (let s = 0; s < steps; s++) stepPass();
     dyePass(steps);
-    particlePass(steps);
     displayPass();
     state.frame++;
     if (state.frame % 12 === 0) readStats();
@@ -828,17 +688,11 @@ function createTunnel(opts) {
     frame,
     savePng,
     healthy,
-    _particles: () => { // test hook
-      const out = new Float32Array(PT * PT * 4);
-      gl.bindFramebuffer(gl.FRAMEBUFFER, parts[partCur].f); gl.readBuffer(gl.COLOR_ATTACHMENT0);
-      gl.readPixels(0, 0, PT, PT, gl.RGBA, gl.FLOAT, out); return Array.from(out);
-    },
     sample: (idx) => { healthy(); return idx.map((i) => [macro[i * 4 + 1], macro[i * 4 + 2], macro[i * 4 + 3]]); }, // test hook
     state,
     setAlpha: (a) => applyGeometry(a),
     setU0: (u) => { state.U0 = u; },
     setField: (m) => { state.fieldMode = m; },
-    setTrails: (on) => { state.nPart = on ? LBM.TRAILS : 0; },
   };
 }
 
@@ -892,7 +746,6 @@ document.getElementById('fd2-shared').addEventListener('change', function () {
   const m = { speed: 0, cp: 1, vort: 2, smoke: 3 }[this.value];
   both.forEach((t) => t.setField(m));
 });
-document.getElementById('tr2-shared').addEventListener('change', function () { both.forEach((t) => t.setTrails(this.checked)); });
 document.getElementById('us2-shared').addEventListener('input', function () {
   const u = parseInt(this.value) / 1000;
   both.forEach((t) => t.setU0(u));
